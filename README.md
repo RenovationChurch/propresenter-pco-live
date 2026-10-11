@@ -4,7 +4,7 @@ Keeps **Planning Center Services LIVE** on the same item as **ProPresenter**, so
 
 It doesn't blindly press "next". Each time ProPresenter settles on a playlist item, it works out which PCO plan item that is, reads where LIVE actually is, and moves LIVE only if they differ. Re-firing a cue does nothing. Jumping back or skipping ahead lands LIVE on the right item.
 
-> **Status:** built and tested against mocks of both APIs. It has **not yet been run against real Planning Center or ProPresenter.** Do the test-plan steps below before using it on a Sunday. See [docs/API_NOTES.md](docs/API_NOTES.md) for what still needs confirming.
+> **Status:** the Planning Center side has been checked against the real API with read-only calls, and a dry-run of the engine against a real plan behaves correctly. Not yet tested: a real ProPresenter, and any armed run (one that writes to LIVE). Do the test-plan steps below before using it on a Sunday. See [docs/API_NOTES.md](docs/API_NOTES.md) for what's verified and what isn't.
 
 ## What it does, and what it won't do
 
@@ -65,7 +65,7 @@ How matching works, in order:
 ```sh
 python -m pcosync run
 ```
-Click through the playlist. You'll see lines like:
+Click through the playlist. Dry-run keeps track of where LIVE *would* be, so it reports what an armed run would do. You'll see lines like:
 ```
 [dry_run] ProPresenter 'Goodness Of God' -> PCO 'Goodness of God'; LIVE on 'Way Maker': would move forward 1 item(s) [title]
 ```

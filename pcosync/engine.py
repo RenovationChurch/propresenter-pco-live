@@ -14,7 +14,9 @@ Each tick:
 
 Positions: LIVE walks through each *service* plan time in order (9:00 items,
 then 11:00 items). A position is a slot (plan_time, item) in that global
-order. The target is the matched item within the "selected" service time,
+order. Each service time also has a "service start" slot ahead of its first
+item: PCO reports it as an ItemTime whose item is null (seen in the real API
+as LIVE's next_item_time before a service begins). The target is the matched item within the "selected" service time,
 which follows LIVE's current service time unless the operator overrides it
 with the `next-service` / `prev-service` commands or --service-time.
 """
@@ -52,6 +54,7 @@ class Decision:
     target: PlanItem | None = None
     live_item: PlanItem | None = None
     steps: int = 0
+    live_note: str = ""
 
     def describe(self) -> str:
         head = ""
@@ -60,7 +63,7 @@ class Decision:
         if self.target is not None:
             head += f" -> PCO '{self.target.title}'"
         if self.action in ("in_sync", "dry_run", "moved", "refused") or self.live_item is not None:
-            head += f"; LIVE on {_title(self.live_item)}"
+            head += f"; LIVE on {self.live_note or _title(self.live_item)}"
         head = head.strip("; ")
         return f"[{self.action}] {head}: {self.reason}" if head else f"[{self.action}] {self.reason}"
 
@@ -72,7 +75,7 @@ def _title(item: PlanItem | None) -> str:
 @dataclass
 class _Slot:
     plan_time_id: str | None
-    item: PlanItem
+    item: PlanItem | None  # None = the service-start slot
 
 
 @dataclass
@@ -86,6 +89,9 @@ class _State:
     confirm_once: bool = False
     paused: bool = False
     took_control: bool = False
+    # Dry-run only: (real LIVE slot when simulated, simulated slot). Lets a
+    # dry-run behave as if earlier moves had happened.
+    simulated: tuple[int, int] | None = None
     playlist_cache: dict = field(default_factory=dict)
 
 
@@ -130,8 +136,11 @@ class SyncEngine:
         self._items_by_id = {i.id: i for i in self.items}
         pt_ids: list[str | None] = [t.id for t in self.plan_times] or [None]
         self._pt_rank = {pid: n for n, pid in enumerate(pt_ids)}
-        self._slots = [_Slot(pid, item) for pid in pt_ids for item in self.items]
-        self._slot_index = {(s.plan_time_id, s.item.id): n for n, s in enumerate(self._slots)}
+        self._slots = []
+        for pid in pt_ids:
+            self._slots.append(_Slot(pid, None))
+            self._slots.extend(_Slot(pid, item) for item in self.items)
+        self._slot_index = {(s.plan_time_id, s.item.id if s.item else None): n for n, s in enumerate(self._slots)}
         if self.me is None:
             self.me = self.pco.me_id()
         self.state.loaded_at = self.clock()
@@ -255,18 +264,27 @@ class SyncEngine:
 
         live_item = self._items_by_id.get(live.current_item_id or "")
         cur = self._position(live)
+        note = self._live_note(live, cur)
         tgt = self._target_slot(live, target)
         if tgt is None:
-            return Decision("skip", "target item not in loaded plan; try 'reload'", pp_name=name, target=target, live_item=live_item)
+            return Decision("skip", "target item not in loaded plan; try 'reload'", pp_name=name, target=target, live_item=live_item, live_note=note)
         if live.current_item_id is not None and cur is None:
-            return Decision("skip", "LIVE is on an item not in the loaded plan; try 'reload'", pp_name=name, target=target, live_item=live_item)
+            return Decision("skip", "LIVE is on an item not in the loaded plan; try 'reload'", pp_name=name, target=target, live_item=live_item, live_note=note)
         cur_i = -1 if cur is None else cur
+        simulated = ""
+        if not self.armed and self.state.simulated and self.state.simulated[0] == cur_i:
+            cur_i = self.state.simulated[1]
+            simulated = "simulated "
+            sim_slot = self._slots[cur_i] if cur_i >= 0 else None
+            if sim_slot is not None:
+                note = f"{simulated}'{sim_slot.item.title}'" if sim_slot.item else f"{simulated}service start"
+                live_item = None
         if cur_i == tgt:
-            return Decision("in_sync", f"already there ({result.method})", pp_name=name, target=target, live_item=live_item)
+            return Decision("in_sync", f"already there ({result.method})", pp_name=name, target=target, live_item=live_item, live_note=note)
 
         steps = self._estimate_steps(cur_i, tgt)
         direction = "forward" if tgt > cur_i else "back"
-        base = dict(pp_name=name, target=target, live_item=live_item, steps=steps)
+        base = dict(pp_name=name, target=target, live_item=live_item, steps=steps, live_note=note)
 
         if steps > self.settings.max_jump and not self.state.confirm_once:
             return Decision(
@@ -281,6 +299,7 @@ class SyncEngine:
             return Decision("refused", "another person controls LIVE; not taking over (use --take-over)", **base)
 
         if not self.armed:
+            self.state.simulated = (-1 if cur is None else cur, tgt)
             ctrl_note = {"none": "; would take control", "other": "; would TAKE OVER control"}.get(ctrl, "")
             return Decision("dry_run", f"would move {direction} {steps} item(s) [{result.method}]{ctrl_note}", **base)
 
@@ -309,6 +328,7 @@ class SyncEngine:
                 new = self._position(live)
                 new_i = -1 if new is None else new
                 base["live_item"] = self._items_by_id.get(live.current_item_id or "")
+                base["live_note"] = self._live_note(live, new)
                 if new_i == tgt:
                     return Decision("moved", f"moved in {n + 1} step(s)", **base)
                 if new_i == cur:
@@ -372,11 +392,23 @@ class SyncEngine:
             return live_pt
         return self._last_pt_rank
 
+    def _live_note(self, live: LiveState, pos: int | None) -> str:
+        if pos is not None and self._slots[pos].item is None:
+            return f"service start {self._pt_rank.get(live.current_plan_time_id, 0) + 1}"
+        if pos is not None and len(self.plan_times) > 1 and live.current_item_id:
+            item = self._items_by_id.get(live.current_item_id)
+            return f"'{item.title}' (service {self._pt_rank.get(self._slots[pos].plan_time_id, 0) + 1})" if item else ""
+        return ""
+
     def _pt_id(self, rank: int) -> str | None:
         return self.plan_times[rank].id if self.plan_times else None
 
     def _position(self, live: LiveState) -> int | None:
         if live.current_item_id is None:
+            # Service-start slot if LIVE names a plan time; otherwise LIVE is
+            # not started (or has finished).
+            if live.current_plan_time_id in self._pt_rank and live.current_plan_time_id is not None:
+                return self._slot_index.get((live.current_plan_time_id, None))
             return None
         rank = self._live_pt(live)
         if rank is None:
@@ -388,7 +420,7 @@ class SyncEngine:
 
     def _estimate_steps(self, cur: int, tgt: int) -> int:
         lo, hi = sorted((cur, tgt))
-        return sum(1 for s in self._slots[lo + 1 : hi + 1] if not s.item.is_header) or 1
+        return sum(1 for s in self._slots[lo + 1 : hi + 1] if s.item is None or not s.item.is_header) or 1
 
 
 def _key(active: PPActive) -> tuple:

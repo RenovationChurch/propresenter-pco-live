@@ -52,7 +52,7 @@ class Harness:
     @property
     def live_title(self):
         cur = self.pco_fake.current()
-        return cur[1].title if cur else None
+        return cur[1].title if cur and cur[1] else None
 
 
 @pytest.fixture

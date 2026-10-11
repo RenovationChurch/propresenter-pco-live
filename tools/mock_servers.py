@@ -67,7 +67,7 @@ def main() -> None:
         cmd = line.strip()
         if cmd == "live":
             cur = pco.current()
-            print(f"LIVE: {cur[0] + ' ' + cur[1].title if cur else '(not started)'}; controller={pco.controller}")
+            print(f"LIVE: {(cur[0] + ' ' + (cur[1].title if cur[1] else 'service start')) if cur else '(not started)'}; controller={pco.controller}")
         elif cmd == "grab":
             pco.controller = "555"
             print("Someone else took LIVE control")

@@ -47,6 +47,7 @@ class FakePCO:
         default_factory=lambda: [("pt9", "service", "2026-10-18T13:00:00Z"), ("pt11", "service", "2026-10-18T15:00:00Z"), ("rh", "rehearsal", "2026-10-18T11:00:00Z")]
     )
     skip_headers: bool = True
+    service_markers: bool = True  # a "service start" stop before each service's items
     controller: str | None = None
     cursor: int | None = None  # index into slots, None = not started
     fail_queue: list = field(default_factory=list)  # status codes or exceptions for upcoming requests
@@ -54,15 +55,20 @@ class FakePCO:
     secret_seen: str | None = None
 
     @property
-    def slots(self) -> list[tuple[str, FakeItem]]:
+    def slots(self) -> list[tuple[str, FakeItem | None]]:
         pts = [p for p in self.plan_times if p[1] == "service"]
-        return [(pt[0], it) for pt in pts for it in self.items]
+        out = []
+        for pt in pts:
+            if self.service_markers:
+                out.append((pt[0], None))
+            out.extend((pt[0], it) for it in self.items)
+        return out
 
     def current(self) -> tuple[str, FakeItem] | None:
         return None if self.cursor is None else self.slots[self.cursor]
 
     def place(self, item_id: str, plan_time: str = "pt9") -> None:
-        self.cursor = next(n for n, (pt, it) in enumerate(self.slots) if pt == plan_time and it.id == item_id)
+        self.cursor = next(n for n, (pt, it) in enumerate(self.slots) if pt == plan_time and it and it.id == item_id)
 
     @property
     def writes(self) -> list[tuple[str, str]]:
@@ -78,7 +84,8 @@ class FakePCO:
             pos += delta
             if pos < 0 or pos >= len(slots):
                 return  # at an end: no movement
-            if not (self.skip_headers and slots[pos][1].item_type == "header"):
+            item = slots[pos][1]
+            if not (self.skip_headers and item is not None and item.item_type == "header"):
                 self.cursor = pos
                 return
 
@@ -147,7 +154,7 @@ class FakePCO:
                     "type": "ItemTime",
                     "id": "it-x",
                     "relationships": {
-                        "item": {"data": {"type": "Item", "id": cur[1].id}},
+                        "item": {"data": {"type": "Item", "id": cur[1].id} if cur[1] else None},
                         "plan_time": {"data": {"type": "PlanTime", "id": cur[0]}},
                     },
                 }

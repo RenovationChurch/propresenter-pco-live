@@ -1,0 +1,19 @@
+# Local config and secrets: never commit these
+config.toml
+*.env
+.env
+secrets*
+
+# Logs
+logs/
+*.log
+
+# Python
+__pycache__/
+*.py[cod]
+.venv/
+venv/
+*.egg-info/
+.pytest_cache/
+build/
+dist/

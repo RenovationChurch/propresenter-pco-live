@@ -1,0 +1,63 @@
+# Copy to config.toml (git-ignored) and edit.
+#
+# Secrets: put your Planning Center Personal Access Token in environment
+# variables, NOT in this file:
+#   export PCO_APP_ID=...    (the token's "Application ID")
+#   export PCO_SECRET=...    (the token's "Secret")
+# If you must, you can set app_id / secret under [pco] in config.toml, which
+# is git-ignored. Never put them in config.example.toml.
+
+[pco]
+# Find with: python -m pcosync service-types
+service_type_id = ""
+# "next" = the next upcoming plan, or a specific plan ID (python -m pcosync plans)
+plan = "next"
+
+[propresenter]
+# ProPresenter > Settings > Network: enable Network, note the IP and port.
+host = "127.0.0.1"
+port = 50001
+timeout = 2.0
+# How often to ask ProPresenter what's live (seconds).
+poll_interval = 0.5
+# Only sync when the active playlist's name contains this text (e.g. "Sunday").
+# Leave empty to accept any playlist.
+playlist_name_contains = ""
+
+[sync]
+# ProPresenter must stay on an item this long before LIVE moves.
+debounce_seconds = 1.0
+# Refuse to move LIVE more than this many items in one go unless you type
+# "confirm". Also catches the jump between 9:00 and 11:00 services.
+max_jump = 3
+# Take LIVE control even if a person already has it. Off by default.
+take_over = false
+# Re-check LIVE every N seconds even if ProPresenter hasn't changed, and pull
+# LIVE back if someone moved it by hand. 0 = only on ProPresenter changes.
+resync_seconds = 0
+# Re-fetch the plan's items this often in case the plan was edited (seconds).
+plan_refresh_seconds = 300
+# Give LIVE control back when the tool stops (only if we hold it).
+release_on_exit = true
+
+[match]
+# ProPresenter items that must never move LIVE. Plain text matches the whole
+# name (case/punctuation-insensitive); "regex:" entries are regular expressions.
+ignore = [
+  "Pre-Service Loop",
+  "Announcements Loop",
+  "regex:^backup",
+]
+# When no title matches, map by position. Only applies to playlist entries
+# ProPresenter marks as PCO-linked, and only if the number of PCO-linked
+# entries equals the plan's item count.
+positional_fallback = true
+
+# When ProPresenter names an item differently from PCO, map it here.
+# Left side: ProPresenter name. Right side: PCO item title.
+[match.aliases]
+# "Way Maker (Live)" = "Way Maker"
+
+[logging]
+file = "logs/pcosync.log"
+level = "INFO"

@@ -267,3 +267,38 @@ def test_duplicate_titles_resolved_by_occurrence():
     d = h.engine.tick()
     assert d.action == "moved", d.describe()
     assert h.pco_fake.current()[1].id == "c"
+
+
+def test_live_parked_on_service_start_slot(harness):
+    harness.pco_fake.controller = ME
+    harness.pco_fake.cursor = 0  # (pt9, service start)
+    d = harness.fire("Countdown")
+    assert d.action == "moved", d.describe()
+    assert harness.live_title == "Countdown"
+    assert len(harness.pco_fake.writes) == 1
+
+
+def test_works_without_service_start_slots():
+    h = Harness(pco=FakePCO(service_markers=False))
+    d = h.fire("Countdown")
+    assert d.action == "moved", d.describe()
+    assert h.live_title == "Countdown"
+
+
+def test_dry_run_reports_service_start():
+    h = Harness(armed=False)
+    h.pco_fake.cursor = 0
+    d = h.fire("Countdown")
+    assert d.action == "dry_run"
+    assert "service start 1" in d.describe()
+
+
+def test_dry_run_simulates_progress():
+    h = Harness(armed=False)
+    for name in ["Countdown", "Way Maker", "Goodness Of God", "Build My Life", "Welcome and Announcements", "Sermon", "Doxology"]:
+        d = h.fire(name)
+        assert d.action == "dry_run", d.describe()
+        assert d.steps <= 2
+    d = h.fire("Way Maker")  # jump back 5 is still refused, as armed would
+    assert d.action == "refused"
+    assert h.pco_fake.writes == []

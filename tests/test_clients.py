@@ -83,3 +83,30 @@ def test_secrets_never_logged_during_sync(caplog):
         h.engine.release()
     assert FAKE_SECRET not in caplog.text
     assert FAKE_APP_ID not in caplog.text
+
+
+def test_parse_real_service_start_item_time():
+    # Shape captured from the real API (next_item_time before a service starts).
+    doc = {
+        "data": {
+            "type": "Live",
+            "links": {"controller": None, "current_item_time": None},
+            "relationships": {"current_item_time": {"data": {"type": "ItemTime", "id": "224515872"}}, "controller": {"data": None}},
+        },
+        "included": [
+            {
+                "type": "ItemTime",
+                "id": "224515872",
+                "attributes": {"exclude": False, "length": 7870.0, "live_end_at": None, "live_start_at": None},
+                "relationships": {
+                    "item": {"data": None},
+                    "plan_time": {"data": {"type": "PlanTime", "id": "224515872"}},
+                    "plan": {"data": {"type": "Plan", "id": "90700203"}},
+                },
+            }
+        ],
+    }
+    live = parse_live(doc)
+    assert live.current_item_id is None
+    assert live.current_plan_time_id == "224515872"
+    assert not live.has_controller

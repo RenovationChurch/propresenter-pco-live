@@ -1,26 +1,32 @@
-# API notes (Phase 0 findings)
+# API notes
 
-The recon for this first build couldn't reach the live APIs. The cloud environment's network policy blocked `api.planningcenteronline.com`, and the build had no access to a running ProPresenter. These notes list where each fact came from and how sure we are. **Confirm the "unverified" items with read-only calls before relying on them.**
+## Planning Center Services: verified against the real API (Oct 11, 2026)
 
-## Planning Center Services
+Checked with read-only calls on the Weekend Gatherings service type.
 
-| Fact | Source | Confidence |
-|---|---|---|
-| HTTP Basic auth with Personal Access Token (app ID : secret) | PCO docs, prior art | High |
-| `GET .../plans/{plan}/items` gives `title`, `item_type` (`song`, `header`, `media`, `item`), `sequence` | PCO docs | High |
-| `GET .../plans/{plan}/plan_times` gives `time_type` (`service`, `rehearsal`, `other`), `starts_at` | PCO docs | High |
-| `GET .../plans/{plan}/live?include=current_item_time,controller` | prior art uses `include=current_item_time,items` and `include=items,controller,next_item_time` | High that the includes exist |
-| The current item comes from the included `ItemTime`'s `relationships.item` | prior art | High |
-| `ItemTime.relationships.plan_time` says which service time LIVE is in | PCO data model | **Unverified.** If missing, the tool falls back to the selected service time. |
-| `data.relationships.controller.data.id` is the controller's Person id | JSON:API convention | **Unverified.** Prior art only checks that `data.links.controller` is non-null. The parser handles both shapes. |
-| `POST .../live/go_to_next_item`, `go_to_previous_item`, `toggle_control` | prior art (`pastorhudson/ProPresenter-PCO-Live-Auto-Control`), which works in production | High |
-| **No "jump to item" action** | nothing found in prior art or docs search | **Unverified.** The engine steps one item at a time and re-reads LIVE after every step, so it works either way. |
-| `toggle_control` when someone else controls takes control from them | inferred from the LIVE UI's "Take Control" | **Unverified.** Only used with `--take-over`. |
-| next/previous skip header items | LIVE UI behaviour | **Unverified.** The engine doesn't depend on it; it re-reads after every step. |
-| LIVE runs service times in order and next from the last item moves into the next service time | LIVE UI behaviour | **Unverified** |
-| `GET /services/v2/me` gives the token's Person id | PCO docs | Medium. Falls back to `/people/v2/me`. |
-| Rate limit about 100 requests / 20 s, 429 with `Retry-After` | PCO docs | High. The client honours `Retry-After` (capped at 30 s). |
-| API-driven advances record times like manual clicks | — | **Unknown. Check on a test plan (Phase 3).** |
+| Fact | Status |
+|---|---|
+| HTTP Basic auth with a Personal Access Token works; `GET /services/v2/me` returns the token's Person id | **Verified** |
+| `.../plans?filter=future` includes today's plan (first result was Oct 11 on Oct 11) | **Verified.** `--plan next` picks today's plan on a Sunday. |
+| `.../plans/{plan}/items` returns `title`, `item_type` (`header`, `item`, `song`, ...), `sequence` | **Verified** |
+| `.../plans/{plan}/plan_times` returns `time_type` (`service`, `rehearsal`, `other`) and `starts_at`; this plan has two `service` times | **Verified** |
+| `.../live` `meta.can_include`: `controller`, `current_item_time`, `items`, `next_item_time`, `service_type` | **Verified** |
+| Live attributes include `can_control` and `can_take_control` (both true for this token) | **Verified** |
+| Live `links` list exactly three actions: `go_to_next_item`, `go_to_previous_item`, `toggle_control` | **Verified** |
+| **There is no "jump to item" action** | **Verified** (not in `links`). The engine steps one item at a time and re-reads LIVE after every step. |
+| With no controller, `relationships.controller.data` is `null` and `links.controller` is `null` | **Verified** |
+| `ItemTime` has `relationships.item`, `relationships.plan_time` and `attributes.live_start_at` / `live_end_at` / `exclude` | **Verified** |
+| Before a service starts, LIVE's `next_item_time` is an ItemTime with **`item: null`** pointing at the first service PlanTime: a "service start" stop | **Verified** (shape). The engine models a service-start slot ahead of each service time's items. |
+| Each item has one ItemTime per service time | **Verified** |
+| No LIVE recorded times (`live_start_at`) on the last 6 Weekend Gatherings plans | **Verified.** There's no manual-recording baseline to compare against yet. |
+
+### Still unverified (needs a test plan and an armed run)
+
+- Does `toggle_control` take control when nobody holds it? (Almost certainly.) What does it do when someone else holds it? (Only used with `--take-over`.)
+- When a controller is set, is `relationships.controller.data.id` the controller's Person id? The parser also handles the case where only the link is present.
+- Do next/previous skip header items? Do they skip ItemTimes marked `exclude: true`? The engine doesn't depend on either: it re-reads after every step and stops on overshoot.
+- Does "next" from the last item of the 9:00 service go to the 11:00 service-start stop?
+- Do API-driven moves record `live_start_at` / `live_end_at` the same way manual clicks do?
 
 ## ProPresenter (21.x / 7.x Network API)
 

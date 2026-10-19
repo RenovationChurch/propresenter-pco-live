@@ -1,0 +1,37 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+  <key>CFBundleName</key>
+  <string>PCOSync</string>
+  <key>CFBundleDisplayName</key>
+  <string>PCOSync</string>
+  <key>CFBundleIdentifier</key>
+  <string>com.renovationchurch.pcosync</string>
+  <key>CFBundleExecutable</key>
+  <string>PCOSync</string>
+  <key>CFBundlePackageType</key>
+  <string>APPL</string>
+  <key>CFBundleShortVersionString</key>
+  <string>1.0.0</string>
+  <key>CFBundleVersion</key>
+  <string>1</string>
+  <key>LSMinimumSystemVersion</key>
+  <string>13.0</string>
+  <!-- Menu-bar only: no Dock icon, no app menu. -->
+  <key>LSUIElement</key>
+  <true/>
+  <key>NSHumanReadableCopyright</key>
+  <string>Renovation Church</string>
+  <!-- ProPresenter's API is plain HTTP, possibly on another Mac on the LAN. -->
+  <key>NSAppTransportSecurity</key>
+  <dict>
+    <key>NSAllowsArbitraryLoads</key>
+    <true/>
+    <key>NSAllowsLocalNetworking</key>
+    <true/>
+  </dict>
+  <key>NSLocalNetworkUsageDescription</key>
+  <string>PCOSync talks to ProPresenter's Network API to see which playlist item is live.</string>
+</dict>
+</plist>

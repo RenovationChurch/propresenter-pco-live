@@ -17,3 +17,8 @@ venv/
 .pytest_cache/
 build/
 dist/
+
+# Swift
+.build/
+.swiftpm/
+*.xcodeproj

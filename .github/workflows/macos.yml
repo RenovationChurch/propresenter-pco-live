@@ -1,0 +1,42 @@
+name: macOS build
+
+on:
+  push:
+  pull_request:
+  workflow_dispatch:
+
+jobs:
+  build:
+    runs-on: macos-15
+    steps:
+      - uses: actions/checkout@v4
+      - name: Swift version
+        run: swift --version
+      - name: Test
+        run: swift test
+      - name: Build app
+        run: scripts/build-app.sh
+      - name: Smoke test the app binary
+        run: |
+          APP=build/PCOSync.app/Contents/MacOS/PCOSync
+          "$APP" --version
+          "$APP" --headless --data-dir "$RUNNER_TEMP/pcosync" --port 18642 &
+          PID=$!
+          for i in $(seq 1 20); do curl -sf http://127.0.0.1:18642/api/status && break; sleep 0.5; done
+          curl -sf http://127.0.0.1:18642/ | grep -q "<title>PCOSync</title>"
+          kill $PID
+      - name: Zip app
+        run: cd build && ditto -c -k --keepParent PCOSync.app PCOSync.zip
+      - uses: actions/upload-artifact@v4
+        with:
+          name: PCOSync-app
+          path: build/PCOSync.zip
+
+  python:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - run: pip install -e '.[dev]' && pytest -q

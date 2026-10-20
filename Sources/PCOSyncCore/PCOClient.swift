@@ -35,13 +35,16 @@ public struct PlanItem: Equatable {
     public let title: String
     public let itemType: String
     public let sequence: Int
+    /// The item's notes in the plan ("Gospel of John Week 4", "Alex lead").
+    public let description: String
     public var isHeader: Bool { itemType == "header" }
 
-    public init(id: String, title: String, itemType: String, sequence: Int) {
+    public init(id: String, title: String, itemType: String, sequence: Int, description: String = "") {
         self.id = id
         self.title = title
         self.itemType = itemType
         self.sequence = sequence
+        self.description = description
     }
 }
 
@@ -50,6 +53,15 @@ public struct PlanTime: Equatable {
     public let timeType: String
     public let startsAt: String?
     public let name: String?
+
+    public var start: Date? { startsAt.flatMap(parseISODate) }
+}
+
+func parseISODate(_ s: String) -> Date? {
+    let f = ISO8601DateFormatter()
+    if let d = f.date(from: s) { return d }
+    f.formatOptions = [.withInternetDateTime, .withFractionalSeconds]
+    return f.date(from: s)
 }
 
 public struct LiveState: Equatable {
@@ -63,6 +75,23 @@ public struct PlanSummary {
     public let id: String
     public let title: String
     public let dates: String
+}
+
+/// A plan and the service type it belongs to.
+public struct PlanRef: Equatable {
+    public let serviceTypeId: String
+    public let planId: String
+    public var label = ""
+
+    public init(serviceTypeId: String, planId: String, label: String = "") {
+        self.serviceTypeId = serviceTypeId
+        self.planId = planId
+        self.label = label
+    }
+
+    public static func == (a: PlanRef, b: PlanRef) -> Bool {
+        a.serviceTypeId == b.serviceTypeId && a.planId == b.planId
+    }
 }
 
 public final class PCOClient {
@@ -217,6 +246,46 @@ public final class PCOClient {
         return first.id
     }
 
+    /// The plan to follow for these settings. "auto" looks across service
+    /// types (all of them unless `serviceTypeIds` names some) for the plan
+    /// that has songs and whose services are on now or come up soonest. A
+    /// plan counts as on until `windowMinutes` after its last service starts.
+    public func resolvePlan(_ s: PCOSettings, now: Date = Date(), windowMinutes: Double = 180) throws -> PlanRef {
+        if s.plan != "auto" {
+            if s.serviceTypeId.isEmpty { throw PCOError("choose a service type in Settings first") }
+            return PlanRef(serviceTypeId: s.serviceTypeId, planId: try resolvePlanId(s.serviceTypeId, s.plan))
+        }
+        let names = Dictionary(try serviceTypes().map { ($0.id, $0.name) }, uniquingKeysWith: { a, _ in a })
+        let types = s.serviceTypeIds.isEmpty ? names.keys.sorted() : s.serviceTypeIds
+        var candidates: [(start: Date, ref: PlanRef)] = []
+        for st in types {
+            // Only the next few plans per service type can be "now". The most
+            // recent past ones too, in case "future" drops a multi-day plan
+            // (Easter) once its first day has passed.
+            let path = "/services/v2/service_types/\(st)/plans"
+            let future = try get(path, [("filter", "future"), ("order", "sort_date"), ("per_page", "3")]).arr("data")
+            let past = try get(path, [("filter", "past"), ("order", "-sort_date"), ("per_page", "2")]).arr("data")
+            var seen = Set<String>()
+            for d in future + past {
+                guard let id = d.str("id"), seen.insert(id).inserted else { continue }
+                let starts = try planTimes(st, id).filter { $0.timeType == "service" }.compactMap(\.start).sorted()
+                guard let first = starts.first, let last = starts.last,
+                      last.addingTimeInterval(windowMinutes * 60) >= now else { continue }
+                let a = d.obj("attributes") ?? [:]
+                let title = a.str("title") ?? ""
+                let label = "\(names[st] ?? st): \(a.str("dates") ?? id)\(title.isEmpty ? "" : " – " + title)"
+                candidates.append((first, PlanRef(serviceTypeId: st, planId: id, label: label)))
+            }
+        }
+        for c in candidates.sorted(by: { $0.start < $1.start }) {
+            // Plans with songs are services; workshops and meetings aren't.
+            if try planItems(c.ref.serviceTypeId, c.ref.planId).contains(where: { $0.itemType == "song" }) {
+                return c.ref
+            }
+        }
+        throw PCOError("no upcoming plan with songs in \(s.serviceTypeIds.isEmpty ? "any service type" : "the chosen service types")")
+    }
+
     private func planPath(_ st: String, _ plan: String) -> String {
         "/services/v2/service_types/\(st)/plans/\(plan)"
     }
@@ -228,7 +297,8 @@ public final class PCOClient {
                 id: d.str("id") ?? "",
                 title: a.str("title") ?? "",
                 itemType: a.str("item_type").flatMap { $0.isEmpty ? nil : $0 } ?? "item",
-                sequence: a.int("sequence") ?? 0
+                sequence: a.int("sequence") ?? 0,
+                description: a.str("description") ?? ""
             )
         }
         return items.enumerated().sorted { ($0.element.sequence, $0.offset) < ($1.element.sequence, $1.offset) }.map(\.element)

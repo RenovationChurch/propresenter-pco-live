@@ -18,10 +18,12 @@ struct FakeItem {
     let id: String
     let title: String
     var itemType = "song"
-    init(_ id: String, _ title: String, _ itemType: String = "song") {
+    var description = ""
+    init(_ id: String, _ title: String, _ itemType: String = "song", _ description: String = "") {
         self.id = id
         self.title = title
         self.itemType = itemType
+        self.description = description
     }
 }
 
@@ -151,7 +153,7 @@ final class FakePCO {
         let size = 5
         let chunk = items[min(offset, items.count)..<min(offset + size, items.count)]
         let data = chunk.enumerated().map { n, it in
-            ["type": "Item", "id": it.id, "attributes": ["title": it.title, "item_type": it.itemType, "sequence": offset + n + 1]] as [String: Any]
+            ["type": "Item", "id": it.id, "attributes": ["title": it.title, "item_type": it.itemType, "sequence": offset + n + 1, "description": it.description]] as [String: Any]
         }
         var links: [String: Any] = [:]
         if offset + size < items.count {
@@ -264,7 +266,16 @@ final class SleepLog {
 
 final class Clock {
     var t = 1000.0
-    func advance(_ s: Double) { t += s }
+    /// Wall clock: 30 minutes into the fake 9:00 (13:00Z) service.
+    var wall = iso("2026-10-18T13:30:00Z")
+    func advance(_ s: Double) {
+        t += s
+        wall = wall.addingTimeInterval(s)
+    }
+}
+
+func iso(_ s: String) -> Date {
+    ISO8601DateFormatter().date(from: s)!
 }
 
 final class Harness {
@@ -292,7 +303,7 @@ final class Harness {
             pco: self.pco, pp: self.pp, serviceTypeId: ST, planId: PLAN,
             settings: settings ?? SyncSettings(debounceSeconds: 1.0, maxJump: 3, planRefreshSeconds: 0),
             matchSettings: match ?? MatchSettings(ignore: ["Pre-Service Loop", "regex:^backup"]),
-            armed: armed, clock: { clock.t }, log: log
+            armed: armed, clock: { clock.t }, now: { clock.wall }, log: log
         )
         try! engine.loadPlan()
     }

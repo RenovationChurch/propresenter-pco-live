@@ -126,7 +126,7 @@ textarea { min-height: 90px; font-family: ui-monospace, SFMono-Regular, Menlo, m
       <button class="b" data-cmd="prev-service">◀ Previous</button>
       <span id="svc" class="sub" style="min-width:120px;text-align:center"></span>
       <button class="b" data-cmd="next-service">Next ▶</button>
-      <button class="b" data-cmd="auto-service">Follow LIVE</button>
+      <button class="b" data-cmd="auto-service">Automatic</button>
     </div>
     <div id="cmd-out" class="sub" style="margin-top:8px"></div>
   </section>
@@ -141,7 +141,9 @@ textarea { min-height: 90px; font-family: ui-monospace, SFMono-Regular, Menlo, m
   <div class="row"><button class="b primary" id="btn-map">Refresh mapping</button>
     <span class="sub">Click an item in the service playlist in ProPresenter first. Read-only.</span></div>
   <div id="map-msg" class="sub" style="margin:10px 0"></div>
+  <div id="map-warn"></div>
   <div class="table-wrap card"><table><thead><tr><th>#</th><th>ProPresenter item</th><th>Type</th><th>→ PCO item</th><th>How</th></tr></thead><tbody id="map-body"></tbody></table></div>
+  <div id="map-unmatched" class="card" style="margin-top:12px"></div>
 </div>
 
 <div id="tab-settings" class="hidden">
@@ -160,8 +162,8 @@ textarea { min-height: 90px; font-family: ui-monospace, SFMono-Regular, Menlo, m
   <form id="cfg-form">
     <fieldset><legend>Planning Center</legend>
       <div class="two">
-        <label>Service type<select id="f-st"></select><span class="hint"><a href="#" id="load-st">Load from Planning Center</a></span></label>
-        <label>Plan<select id="f-plan"><option value="next">Next upcoming plan (recommended)</option></select><span class="hint"><a href="#" id="load-plans">Load plans</a></span></label>
+        <label>Plan<select id="f-plan"></select><span class="hint">Automatic follows whichever plan with songs is on now or next, in any service type (Weekend Gatherings, Christmas in Other Events…). <a href="#" id="load-plans">Load plans</a></span></label>
+        <label>Service type<select id="f-st"></select><span class="hint">Only for “Next upcoming plan” or a specific plan. <a href="#" id="load-st">Load from Planning Center</a></span></label>
       </div>
     </fieldset>
     <fieldset><legend>ProPresenter</legend>
@@ -178,12 +180,20 @@ textarea { min-height: 90px; font-family: ui-monospace, SFMono-Regular, Menlo, m
     <fieldset><legend>Sync safety</legend>
       <div class="two">
         <label>Debounce (seconds)<input type="number" id="f-debounce" step="0.1" min="0"><span class="hint">ProPresenter must stay on an item this long before LIVE moves.</span></label>
-        <label>Max jump (items)<input type="number" id="f-maxjump" min="1"><span class="hint">Bigger moves wait for “Confirm big move”.</span></label>
+        <label>Max jump (items)<input type="number" id="f-maxjump" min="1"><span class="hint">Bigger moves wait for “Confirm big move”. Only counts plan items that have a ProPresenter slide; skipping the rest is expected.</span></label>
         <label>Resync every (seconds)<input type="number" id="f-resync" min="0"><span class="hint">0 = only when ProPresenter changes.</span></label>
         <label>Re-fetch plan every (seconds)<input type="number" id="f-refresh" min="0"></label>
       </div>
       <label class="inline"><input type="checkbox" id="f-takeover"> Take LIVE control even if a person already has it</label>
       <label class="inline"><input type="checkbox" id="f-release"> Give LIVE control back when stopping</label>
+    </fieldset>
+    <fieldset><legend>Service times</legend>
+      <label class="inline"><input type="checkbox" id="f-autosvc"> Move to the next service time automatically</label>
+      <label class="inline"><input type="checkbox" id="f-onlysvc"> Only move LIVE around service times (never during rehearsals or run-throughs)</label>
+      <div class="two">
+        <label>A service starts this many minutes early<input type="number" id="f-lead" min="0"><span class="hint">Covers preroll and countdown.</span></label>
+        <label>A service can run this many minutes<input type="number" id="f-window" min="30"><span class="hint">Counted from its start time.</span></label>
+      </div>
     </fieldset>
     <fieldset><legend>Matching</legend>
       <div class="two">
@@ -219,6 +229,7 @@ textarea { min-height: 90px; font-family: ui-monospace, SFMono-Regular, Menlo, m
 const $ = (id) => document.getElementById(id);
 const esc = (s) => String(s ?? "").replace(/[&<>"']/g, (c) => ({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;","'":"&#39;"}[c]));
 let status = null, config = null, logAfter = 0, tab = "dash";
+const PLAN_KEEP = '<option value="auto">Automatic (recommended)</option><option value="next">Next upcoming plan in the service type</option>';
 
 async function api(method, path, body) {
   const opts = { method, headers: {} };
@@ -291,7 +302,7 @@ function render(s) {
   const nT = Math.max(times.length, 1);
   const eff = (st.effective ?? 0);
   const lbl = (r) => times[r] && times[r].startsAt ? new Date(times[r].startsAt).toLocaleTimeString([], { hour: "numeric", minute: "2-digit" }) : String(r + 1);
-  $("svc").textContent = s.running ? ((st.selected === null || st.selected === undefined) ? "Following LIVE (" + lbl(eff) + ")" : lbl(st.selected) + " (" + (st.selected + 1) + " of " + nT + ")") : "";
+  $("svc").textContent = s.running ? ((st.selected === null || st.selected === undefined) ? "Automatic (" + lbl(eff) + ")" : lbl(st.selected) + " (" + (st.selected + 1) + " of " + nT + ")") : "";
 
   $("plan-id").textContent = s.planId ? "#" + s.planId : "";
   const planEl = $("plan");
@@ -315,7 +326,7 @@ async function cmd(c) {
 }
 $("btn-dry").onclick = async () => { try { toast((await api("POST", "/api/start", { armed: false })).message); poll(); } catch (e) { toast(e.message); } };
 $("btn-arm").onclick = async () => {
-  if (!confirm("Arm PCOSync?\n\nIt will take LIVE control in Planning Center and move LIVE to follow ProPresenter.\n\nReset rehearsal times in LIVE before the real service.")) return;
+  if (!confirm("Arm PCOSync?\n\nIt will take LIVE control in Planning Center and move LIVE to follow ProPresenter around service times.")) return;
   try { toast((await api("POST", "/api/start", { armed: true })).message); poll(); } catch (e) { toast(e.message); }
 };
 $("btn-stop").onclick = async () => { try { $("btn-stop").disabled = true; toast((await api("POST", "/api/stop")).message); poll(); } catch (e) { toast(e.message); } };
@@ -329,9 +340,16 @@ async function loadMapping() {
   $("map-msg").textContent = "Loading…"; $("map-body").innerHTML = "";
   try {
     const m = await api("GET", "/api/mapping");
-    $("map-msg").textContent = m.message || ("ProPresenter playlist “" + m.playlist + "” → PCO plan " + m.planId);
+    $("map-msg").textContent = m.message || ("ProPresenter playlist “" + m.playlist + "” → " + (m.planLabel || "PCO plan " + m.planId));
+    const warns = m.rows.filter((r) => r.warning);
+    $("map-warn").innerHTML = warns.map((r) => '<div class="banner warn">Check “' + esc(r.name) + "”: " + esc(r.warning) + "</div>").join("");
+    const conf = (r) => r.method === "none" || r.method === "ignored" || r.method === "header" ? "" : (r.score >= 0.95 ? " sure" : r.score >= 0.75 ? " likely" : " best guess");
     $("map-body").innerHTML = m.rows.map((r) => "<tr><td>" + esc(r.index ?? "?") + (r.isPCO ? ' <span class="sub">pco</span>' : "") + "</td><td>" + esc(r.name) + "</td><td>" + esc(r.type) + "</td><td>" +
-      (r.target ? esc(r.target) + ' <span class="sub">#' + esc(r.sequence) + "</span>" : '<span class="sub">— no move —</span>') + '</td><td class="sub">' + esc(r.method) + ": " + esc(r.reason) + "</td></tr>").join("");
+      (r.target ? esc(r.target) + ' <span class="sub">#' + esc(r.sequence) + (r.alternatives && r.alternatives.length ? " or #" + r.alternatives.map(esc).join(", #") + " (next one ahead of LIVE)" : "") + "</span>" : '<span class="sub">— no move —</span>') +
+      '</td><td class="sub">' + esc(r.method) + esc(conf(r)) + ": " + esc(r.reason) + "</td></tr>").join("");
+    const un = m.unmatchedItems || [];
+    $("map-unmatched").innerHTML = '<h2>Plan items with no ProPresenter slide</h2><div class="sub">LIVE passes over these on its way to the next matched item.' + (un.length ? " If one should have a slide, rename it or add an alias." : "") + "</div>" +
+      (un.length ? "<ul>" + un.map((i) => "<li>#" + esc(i.sequence) + " " + esc(i.title) + "</li>").join("") + "</ul>" : '<div class="sub">None.</div>');
   } catch (e) { $("map-msg").textContent = e.message; }
 }
 $("btn-map").onclick = loadMapping;
@@ -351,13 +369,15 @@ async function loadConfig() {
     $("data-dir").textContent = "Settings are stored in " + r.dataDirectory;
     const c = config;
     fillSelect($("f-st"), [], c.pco.serviceTypeId, '<option value="">(not chosen)</option>');
-    fillSelect($("f-plan"), [], c.pco.plan, '<option value="next">Next upcoming plan (recommended)</option>');
+    fillSelect($("f-plan"), [], c.pco.plan, PLAN_KEEP);
     $("f-host").value = c.propresenter.host; $("f-port").value = c.propresenter.port;
     $("f-poll").value = c.propresenter.pollInterval; $("f-timeout").value = c.propresenter.timeout;
     $("f-plfilter").value = c.sync.playlistNameContains;
     $("f-debounce").value = c.sync.debounceSeconds; $("f-maxjump").value = c.sync.maxJump;
     $("f-resync").value = c.sync.resyncSeconds; $("f-refresh").value = c.sync.planRefreshSeconds;
     $("f-takeover").checked = c.sync.takeOver; $("f-release").checked = c.sync.releaseOnExit;
+    $("f-autosvc").checked = c.sync.autoServiceTime; $("f-onlysvc").checked = c.sync.onlyDuringServices;
+    $("f-lead").value = c.sync.serviceLeadMinutes; $("f-window").value = c.sync.serviceWindowMinutes;
     $("f-ignore").value = c.match.ignore.join("\n");
     $("f-aliases").value = Object.entries(c.match.aliases).map(([k, v]) => k + " = " + v).join("\n");
     $("f-positional").checked = c.match.positionalFallback;
@@ -378,7 +398,7 @@ async function loadPlans(quiet) {
   if (!st) { if (!quiet) toast("Choose a service type first"); return; }
   try {
     const r = await api("GET", "/api/pco/plans?serviceType=" + encodeURIComponent(st));
-    fillSelect($("f-plan"), r.plans.map((p) => ({ value: p.id, label: p.dates + (p.title ? " – " + p.title : "") + " (" + p.id + ")" })), $("f-plan").value || (config && config.pco.plan), '<option value="next">Next upcoming plan (recommended)</option>');
+    fillSelect($("f-plan"), r.plans.map((p) => ({ value: p.id, label: p.dates + (p.title ? " – " + p.title : "") + " (" + p.id + ")" })), $("f-plan").value || (config && config.pco.plan), PLAN_KEEP);
   } catch (e) { if (!quiet) toast(e.message); }
 }
 $("load-st").onclick = (e) => { e.preventDefault(); loadServiceTypes(false); };
@@ -411,10 +431,11 @@ $("cfg-form").onsubmit = async (e) => {
   const aliases = {};
   $("f-aliases").value.split("\n").forEach((line) => { const i = line.indexOf("="); if (i > 0) { const k = line.slice(0, i).trim(), v = line.slice(i + 1).trim(); if (k && v) aliases[k] = v; } });
   const c = {
-    pco: { serviceTypeId: $("f-st").value, plan: $("f-plan").value || "next" },
+    pco: { serviceTypeId: $("f-st").value, plan: $("f-plan").value || "auto", serviceTypeIds: (config && config.pco.serviceTypeIds) || [] },
     propresenter: { host: $("f-host").value.trim(), port: num("f-port"), timeout: num("f-timeout"), pollInterval: num("f-poll") },
     sync: { debounceSeconds: num("f-debounce"), maxJump: num("f-maxjump"), takeOver: $("f-takeover").checked, resyncSeconds: num("f-resync"),
-            planRefreshSeconds: num("f-refresh"), playlistNameContains: $("f-plfilter").value.trim(), releaseOnExit: $("f-release").checked },
+            planRefreshSeconds: num("f-refresh"), playlistNameContains: $("f-plfilter").value.trim(), releaseOnExit: $("f-release").checked,
+            autoServiceTime: $("f-autosvc").checked, onlyDuringServices: $("f-onlysvc").checked, serviceLeadMinutes: num("f-lead"), serviceWindowMinutes: num("f-window") },
     match: { ignore: $("f-ignore").value.split("\n").map((s) => s.trim()).filter(Boolean), aliases, positionalFallback: $("f-positional").checked },
     app: { autoStart: $("f-autostart").checked, startArmed: $("f-startarmed").checked, logLevel: $("f-loglevel").value },
     web: { port: num("f-webport"), allowRemote: $("f-remote").checked, password: $("f-webpw").value },

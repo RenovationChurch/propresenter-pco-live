@@ -236,19 +236,21 @@ public final class WebAPI {
 
     func mapping() throws -> JSONObject {
         let cfg = store.config
-        if cfg.pco.serviceTypeId.isEmpty { throw PCOError("choose a service type in Settings first") }
         let pco = try pcoClient()
-        let plan = try pco.resolvePlanId(cfg.pco.serviceTypeId, cfg.pco.plan)
-        let matcher = Matcher(try pco.planItems(cfg.pco.serviceTypeId, plan), cfg.match)
+        let ref = try pco.resolvePlan(cfg.pco, now: service.now(), windowMinutes: cfg.sync.serviceWindowMinutes)
+        let items = try pco.planItems(ref.serviceTypeId, ref.planId)
+        let matcher = Matcher(items, cfg.match)
         let pp = ppClient()
         let active = try pp.active()
         guard let pl = active.playlist else {
-            return ["planId": plan, "playlist": "", "rows": [],
+            return ["planId": ref.planId, "planLabel": ref.label, "playlist": "", "rows": [], "unmatchedItems": [],
                     "message": "ProPresenter has no active playlist. Click an item in the service playlist first."]
         }
         let playlist = try pp.playlistItems(pl)
+        var hit = Set<String>()
         let rows = playlist.map { entry -> JSONObject in
             let r = matcher.match(PPRef(uuid: entry.uuid, name: entry.name, index: entry.index), playlist)
+            for i in [r.item].compactMap({ $0 }) + r.alternatives { hit.insert(i.id) }
             return [
                 "index": entry.index.map { $0 as Any } ?? NSNull(),
                 "name": entry.name,
@@ -256,11 +258,16 @@ public final class WebAPI {
                 "isPCO": entry.isPCO,
                 "target": r.item?.title ?? "",
                 "sequence": r.item?.sequence ?? 0,
+                "alternatives": r.alternatives.map(\.sequence),
                 "method": r.method,
+                "score": (r.score * 100).rounded() / 100,
                 "reason": r.reason,
+                "warning": r.warning,
             ]
         }
-        return ["planId": plan, "playlist": pl.name, "rows": rows]
+        // Plan items no ProPresenter entry fires: LIVE passes over these.
+        let unmatched = items.filter { !$0.isHeader && !hit.contains($0.id) }.map { ["sequence": $0.sequence, "title": $0.title] as JSONObject }
+        return ["planId": ref.planId, "planLabel": ref.label, "playlist": pl.name, "rows": rows, "unmatchedItems": unmatched]
     }
 }
 

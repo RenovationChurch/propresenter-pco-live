@@ -32,7 +32,8 @@ final class ServiceAndWebTests: XCTestCase {
         store = try ConfigStore(directory: dir)
         log = Logger(level: .debug, echoToStderr: false)
         let w = world!
-        service = SyncService(store: store, log: log, transportFactory: { w.transport() }, pcoSleep: { _ in })
+        service = SyncService(store: store, log: log, transportFactory: { w.transport() },
+                              now: { iso("2026-10-18T13:30:00Z") }, pcoSleep: { _ in })
         api = WebAPI(service: service, transportFactory: { w.transport() })
     }
 
@@ -162,8 +163,10 @@ final class ServiceAndWebTests: XCTestCase {
     func testPartialConfigFillsDefaults() throws {
         let cfg = try AppConfig.decode(Data(#"{"pco": {"serviceTypeId": "42"}}"#.utf8))
         XCTAssertEqual(cfg.pco.serviceTypeId, "42")
-        XCTAssertEqual(cfg.pco.plan, "next")
+        XCTAssertEqual(cfg.pco.plan, "auto")
         XCTAssertEqual(cfg.sync.maxJump, 3)
+        XCTAssertEqual(cfg.sync.serviceLeadMinutes, 20)
+        XCTAssertTrue(cfg.sync.onlyDuringServices)
         XCTAssertEqual(cfg.match.ignore.count, 3)
     }
 

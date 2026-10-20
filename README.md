@@ -14,7 +14,8 @@ It doesn't blindly press "next". Each time ProPresenter settles on a playlist it
 - **It takes LIVE control.** Only one controller can drive LIVE. When armed, it takes control if nobody has it. If a person already has control, it does **not** take over unless you turn on "Take LIVE control even if a person already has it".
 - It **never** moves LIVE for an item on your ignore list, an item with no match, or a header. The activity feed says why.
 - It **never** acts when ProPresenter or Planning Center can't be reached. It retries and shows the problem on the dashboard.
-- It refuses to move LIVE more than *max jump* items at once (default 3) until you press **Confirm big move**.
+- It refuses to move LIVE past more than *max jump* matched items at once (default 3) until you press **Confirm big move**. Plan items with no ProPresenter slide (a host prayer, a baptism setup) don't count: LIVE passes over them on its way to the next matched item.
+- When armed, it only moves LIVE around service times: from 20 minutes before each service until 3 hours after it starts. Rehearsals, run-throughs and mid-week tests never record times.
 - When you stop or quit it, it gives LIVE control back, but only if it still holds it.
 
 ## Install (on the ProPresenter Mac)
@@ -44,14 +45,14 @@ Open **http://127.0.0.1:8642** (or menu-bar icon › **Open Dashboard…**) and 
 
 1. **ProPresenter:** ProPresenter › Settings › Network: enable Network and note the port. Enter the host (`127.0.0.1` if it's this Mac) and the port.
 2. **Planning Center credentials:** create a Personal Access Token at <https://api.planningcenteronline.com/oauth/applications>. The token's user needs permission to control LIVE on the service type. Paste the Application ID and Secret, then click **Save & test**. They're checked before saving. They're stored only on this Mac, readable only by your user account, and are never shown again.
-3. **Service type:** pick it from the list (it loads from Planning Center). Leave **Plan** on "Next upcoming plan". That picks today's plan on a Sunday and moves on to next week's plan automatically.
+3. **Plan:** leave it on **Automatic**. It follows whichever plan with songs is on now or comes up next, in any service type: the Sunday plan most weeks, a multi-day Easter plan, or a Christmas plan in Other Events. It moves on to the next plan by itself after the last service. Plans without songs (workshops, team nights) are skipped. (To pin one service type, pick "Next upcoming plan in the service type" and choose the **Service type**.)
 4. Click **Save settings**, then **Test connections**.
 
 ## Check the mapping (read-only)
 
 Open the service playlist in ProPresenter and click any item in it. Then open the **Mapping** tab.
 
-Every item that should move LIVE should show a PCO item. Anything that shouldn't (loops, announcement slides, backups) should show `— no move —`. Fix mismatches in **Settings › Matching**:
+Every item that should move LIVE should show a PCO item, with how sure the match is (*sure*, *likely* or *best guess*). Anything that shouldn't (loops, announcement slides, backups) should show `— no move —`. Below the table, **Plan items with no ProPresenter slide** lists what LIVE will pass over. Yellow banners flag things to double-check, like "ProPresenter says Week 3 but the plan says Week 4". Fix mismatches in **Settings › Matching**:
 
 - **Never move LIVE for:** one name per line. Matching ignores case and punctuation. Lines starting with `regex:` are regular expressions.
 - **Aliases:** one `ProPresenter name = PCO title` per line.
@@ -59,9 +60,14 @@ Every item that should move LIVE should show a PCO item. Anything that shouldn't
 How matching works, in order:
 1. **Ignore list:** never moves LIVE.
 2. **Headers:** never move LIVE.
-3. **Aliases:** your explicit ProPresenter-name → PCO-title map.
-4. **Title:** case, punctuation, accents and `&`/`and` are ignored. If two plan items share a title (e.g. two "Prayer" items), the 2nd "Prayer" in the playlist maps to the 2nd in the plan.
-5. **Position (fallback):** for playlists ProPresenter built from the PCO plan. Entries marked PCO-linked map by position, and only if their count equals the plan's item count. Items you added by hand never match by position.
+3. **Aliases:** your explicit ProPresenter-name → PCO-title map. Always wins.
+4. **Best guess:** each playlist entry is compared with each plan item:
+   - **Title.** Case, punctuation, accents, plurals and `&`/`and` are ignored. The person after a dash is ignored too ("Baptisms" = "BAPTISMS - Joey"), joined words count ("Pre-roll" = "PREROLL SLIDES"), and one name may contain the other ("Bumper" = "SERMON BUMPER", "Closing" = "HOST CLOSING - Jon").
+   - **Description.** Most words of the name appear at the top of the item's description in PCO ("Gospel of John - Week 3" = "MESSAGE - Jon", described "Gospel of John Week 4").
+   - **Position.** For playlists ProPresenter built from the PCO plan: the Nth PCO-linked entry = the Nth plan item, when the counts agree.
+
+   Then the whole playlist is lined up against the whole plan **in order**. That's what keeps repeated songs straight: the 1st "What A Worthy Name" in the playlist goes to the one before the baptisms, the 2nd to the one after. Entries you add by hand in between don't throw anything off.
+5. **A song used twice but in the playlist once:** LIVE goes to the next copy ahead of where it is, so the same slide works for the opener and the closer.
 
 ## Running it
 
@@ -74,7 +80,7 @@ The dashboard shows what ProPresenter is on, where LIVE is, who controls LIVE, t
 | **Stop** | Stop following. Releases LIVE control if PCOSync holds it. |
 | **Pause / Resume** | Keep running but don't move LIVE. |
 | **Confirm big move** | Allow the next move once, even if it's bigger than max jump. |
-| **Service time: Previous / Next / Follow LIVE** | Target the previous/next service time (e.g. 11:00 after 9:00), or go back to following whichever service time LIVE is on. |
+| **Service time: Previous / Next / Automatic** | Override the service time (e.g. 10:50 after 9:00). Rarely needed: **Automatic** (the default) follows LIVE and starts the next service on its own. |
 | **Reload plan** | Re-fetch the plan after editing it in PCO. It also refreshes every 5 minutes on its own. |
 
 The menu-bar icon shows the state at a glance. **ARMED** in red means it's moving LIVE, **DRY** means dry-run, and a warning triangle means it can't reach ProPresenter or Planning Center. The same controls are in its menu.
@@ -83,25 +89,27 @@ The menu-bar icon shows the state at a glance. **ARMED** in red means it's movin
 
 ### Multiple service times
 
-LIVE runs through the 9:00 items, then the 11:00 items. When the 11:00 service starts, ProPresenter goes back to item 1, which looks like a big jump *back* in the 9:00 service. Max jump refuses that move. Press **Next** under Service time, and LIVE moves forward into the 11:00 service.
+LIVE runs through the 9:00 items, then the 10:50 items. From 20 minutes before a service starts (preroll), ProPresenter going back to the start of the playlist moves LIVE into that service instead of rewinding the last one. If the 9:00 runs long, moving *forward* (the closing song at 10:35) stays in the 9:00. This works for any number of services over any number of days (Easter, Christmas).
+
+If you ever need to, **Previous** / **Next** under Service time override it, and **Automatic** goes back to the clock. Settings › Service times sets the lead time and how long a service can run.
 
 ## Testing on a dummy plan (do this before any Sunday)
 
 1. In PCO, create a throwaway plan (not a Sunday plan) with a few items and a header.
-2. In Settings, set **Plan** to that test plan (click "Load plans") and save. Check the **Mapping** tab.
+2. In Settings, pick its **Service type**, set **Plan** to that test plan (click "Load plans"), turn off **Only move LIVE around service times** (unless the test plan has a service time right now), and save. Check the **Mapping** tab.
 3. **Arm** and click through ProPresenter: forward, re-fire, jump back, skip ahead, an ignored item. Watch the activity feed.
 4. In PCO, check the plan's recorded times and the **LIVE: Recorded Times** report. Note whether API-driven moves record the same as manual clicks.
-5. **Stop**, set Plan back to "Next upcoming plan", and **reset** the rehearsal times in LIVE before the real service.
+5. **Stop**, set Plan back to **Automatic**, turn **Only move LIVE around service times** back on, and save.
 
 ## Service-day checklist
 
 - [ ] ProPresenter open, Network enabled, service playlist loaded.
 - [ ] PCOSync running (menu-bar icon), dashboard shows both dots green.
 - [ ] **Mapping** tab: every expected item maps.
-- [ ] Rehearsal times reset in LIVE.
+- [ ] **Mapping** tab: no yellow banners, and the "no ProPresenter slide" list looks right.
 - [ ] Nobody else needs LIVE control (PCOSync will hold it).
 - [ ] **Arm**.
-- [ ] Between services: **Next** (service time) when the second service starts.
+- [ ] Between services: nothing to do. The next service starts on its own.
 - [ ] After service: **Stop**.
 
 ## Where things live
@@ -136,7 +144,7 @@ python3 tools/mock_servers.py                     # fake PCO on :8765, fake ProP
 # in another terminal:
 PCO_BASE_URL=http://127.0.0.1:8765 swift run PCOSync --headless --data-dir /tmp/pcosync-dev
 ```
-Open http://127.0.0.1:8642, enter any Application ID and Secret, and pick the "Sunday" service type. Type item numbers into the mock-server terminal to "fire" ProPresenter cues. `live` shows fake LIVE and `grab` makes someone else take control.
+Open http://127.0.0.1:8642, enter any Application ID and Secret, set Plan to "Next upcoming plan in the service type", pick the "Sunday" service type, and turn off "Only move LIVE around service times" (the mock plan's times are in the past). Type item numbers into the mock-server terminal to "fire" ProPresenter cues. `live` shows fake LIVE and `grab` makes someone else take control.
 
 `PCOSync --headless` runs without the menu bar (Ctrl-C to stop). `--data-dir DIR` keeps settings and logs in DIR. `--port N` changes the dashboard port.
 

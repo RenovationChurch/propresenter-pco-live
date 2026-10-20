@@ -8,8 +8,18 @@ import Foundation
 
 public struct PCOSettings: Codable, Equatable {
     public var serviceTypeId = ""
-    /// "next" = the next upcoming plan, or a specific plan ID.
-    public var plan = "next"
+    /// "auto" = the next plan with songs in any service type (see
+    /// PCOClient.resolvePlan), "next" = the next upcoming plan in
+    /// `serviceTypeId`, or a specific plan ID.
+    public var plan = "auto"
+    /// For "auto": only look in these service types. Empty = all of them.
+    public var serviceTypeIds: [String] = []
+
+    public init(serviceTypeId: String = "", plan: String = "auto", serviceTypeIds: [String] = []) {
+        self.serviceTypeId = serviceTypeId
+        self.plan = plan
+        self.serviceTypeIds = serviceTypeIds
+    }
 }
 
 public struct ProPresenterSettings: Codable, Equatable {
@@ -66,7 +76,9 @@ public struct AppConfig: Codable, Equatable {
         if sync.debounceSeconds < 0 { errs.append("debounce can't be negative") }
         if !(1024...65535).contains(web.port) { errs.append("web port must be 1024-65535") }
         if web.allowRemote && web.password.count < 6 { errs.append("remote access needs a password of 6+ characters") }
-        if pco.plan.trimmingCharacters(in: .whitespaces).isEmpty { errs.append("plan must be 'next' or a plan ID") }
+        if pco.plan.trimmingCharacters(in: .whitespaces).isEmpty { errs.append("plan must be 'auto', 'next' or a plan ID") }
+        if sync.serviceLeadMinutes < 0 { errs.append("service lead time can't be negative") }
+        if sync.serviceWindowMinutes < 30 { errs.append("service length must be at least 30 minutes") }
         for p in match.ignore where p.hasPrefix(regexPrefix) {
             if (try? NSRegularExpression(pattern: String(p.dropFirst(regexPrefix.count)))) == nil {
                 errs.append("ignore pattern \(p) is not a valid regular expression")

@@ -14,6 +14,7 @@ public final class SyncService {
     public let log: Logger
     let transportFactory: () -> HTTPTransport
     let clock: () -> Double
+    let now: () -> Date
     let pcoSleep: (Double) -> Void
 
     private let cond = NSCondition()
@@ -32,11 +33,13 @@ public final class SyncService {
     public init(store: ConfigStore, log: Logger,
                 transportFactory: @escaping () -> HTTPTransport = { URLSessionTransport() },
                 clock: @escaping () -> Double = { ProcessInfo.processInfo.systemUptime },
+                now: @escaping () -> Date = Date.init,
                 pcoSleep: @escaping (Double) -> Void = { Thread.sleep(forTimeInterval: $0) }) {
         self.store = store
         self.log = log
         self.transportFactory = transportFactory
         self.clock = clock
+        self.now = now
         self.pcoSleep = pcoSleep
     }
 
@@ -167,7 +170,7 @@ public final class SyncService {
         guard let creds = store.credentials else {
             throw NeedsSetup(description: "Enter your Planning Center Application ID and Secret in Settings.")
         }
-        if cfg.pco.serviceTypeId.isEmpty {
+        if cfg.pco.serviceTypeId.isEmpty && cfg.pco.plan != "auto" {
             throw NeedsSetup(description: "Choose a Planning Center service type in Settings.")
         }
         log.setSecrets([creds.appId, creds.secret])
@@ -177,9 +180,10 @@ public final class SyncService {
                                 transport: transportFactory(), sleep: pcoSleep, log: log)
         let pp = ProPresenterClient(host: cfg.propresenter.host, port: cfg.propresenter.port,
                                     timeout: cfg.propresenter.timeout, transport: transportFactory())
-        let planId = try pco.resolvePlanId(cfg.pco.serviceTypeId, cfg.pco.plan)
-        let engine = SyncEngine(pco: pco, pp: pp, serviceTypeId: cfg.pco.serviceTypeId, planId: planId,
-                                settings: cfg.sync, matchSettings: cfg.match, armed: armed, clock: clock, log: log)
+        let ref = try pco.resolvePlan(cfg.pco, now: now(), windowMinutes: cfg.sync.serviceWindowMinutes)
+        if !ref.label.isEmpty { log.info("Following \(ref.label) (plan \(ref.planId))") }
+        let engine = SyncEngine(pco: pco, pp: pp, serviceTypeId: ref.serviceTypeId, planId: ref.planId,
+                                settings: cfg.sync, matchSettings: cfg.match, armed: armed, clock: clock, now: now, log: log)
         try engine.loadPlan()
         return engine
     }
@@ -202,7 +206,11 @@ public final class SyncService {
                     nextResolve = clock() + max(store.config.sync.planRefreshSeconds, 60)
                     if armed {
                         log.warning("ARMED: this will take LIVE control and move LIVE for plan \(e.planId). A human controller will not be displaced unless take-over is on.")
-                        log.warning("Reset rehearsal times in LIVE before the real service.")
+                        if store.config.sync.onlyDuringServices {
+                            log.info("LIVE only moves from \(Int(store.config.sync.serviceLeadMinutes)) min before each service time.")
+                        } else {
+                            log.warning("Reset rehearsal times in LIVE before the real service.")
+                        }
                     } else {
                         log.info("DRY-RUN: nothing will be written to Planning Center. Arm to move LIVE.")
                     }
@@ -236,12 +244,13 @@ public final class SyncService {
             }
             if shouldStop(gen) { break }
 
-            // "next" plan: pick up next week's plan without a restart.
+            // "auto"/"next" plan: pick up the next plan without a restart.
             let cfg = store.config
-            if cfg.pco.plan == "next" && clock() >= nextResolve {
+            if (cfg.pco.plan == "next" || cfg.pco.plan == "auto") && clock() >= nextResolve {
                 nextResolve = clock() + max(cfg.sync.planRefreshSeconds, 60)
-                if let id = try? e.pco.resolvePlanId(cfg.pco.serviceTypeId, "next"), id != e.planId {
-                    log.info("Next plan is now \(id) (was \(e.planId)); switching")
+                if let ref = try? e.pco.resolvePlan(cfg.pco, now: now(), windowMinutes: cfg.sync.serviceWindowMinutes),
+                   ref != PlanRef(serviceTypeId: e.serviceTypeId, planId: e.planId) {
+                    log.info("Next plan is now \(ref.planId) (was \(e.planId)); switching")
                     e.release()
                     engine = nil
                     continue

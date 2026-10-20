@@ -20,6 +20,17 @@
 // item within the "selected" service time, which follows LIVE's current
 // service time unless the operator overrides it with next-service /
 // prev-service.
+//
+// Service times switch on their own: from `serviceLeadMinutes` before a
+// service starts, ProPresenter going *back* (the playlist starting over for
+// the next service) moves into that service instead of rewinding the last one.
+// When armed, LIVE only moves from `serviceLeadMinutes` before a service until
+// `serviceWindowMinutes` after it starts, so rehearsals and run-throughs never
+// record times.
+//
+// Max jump counts only plan items ProPresenter could have fired. Skipping
+// items with no slide in the playlist (a host prayer, a setup moment) is
+// expected and never needs confirming.
 
 import Foundation
 
@@ -31,9 +42,19 @@ public struct SyncSettings: Codable, Equatable {
     public var planRefreshSeconds = 300.0
     public var playlistNameContains = ""
     public var releaseOnExit = true
+    /// Move into the next service time on its own (see the header comment).
+    public var autoServiceTime = true
+    /// How long before a service starts it counts as started (preroll).
+    public var serviceLeadMinutes = 20.0
+    /// Armed: only move LIVE around service times, never in rehearsals.
+    public var onlyDuringServices = true
+    /// How long after a service starts it may still be running.
+    public var serviceWindowMinutes = 180.0
 
     public init(debounceSeconds: Double = 1.0, maxJump: Int = 3, takeOver: Bool = false, resyncSeconds: Double = 0,
-                planRefreshSeconds: Double = 300, playlistNameContains: String = "", releaseOnExit: Bool = true) {
+                planRefreshSeconds: Double = 300, playlistNameContains: String = "", releaseOnExit: Bool = true,
+                autoServiceTime: Bool = true, serviceLeadMinutes: Double = 20, onlyDuringServices: Bool = true,
+                serviceWindowMinutes: Double = 180) {
         self.debounceSeconds = debounceSeconds
         self.maxJump = maxJump
         self.takeOver = takeOver
@@ -41,6 +62,10 @@ public struct SyncSettings: Codable, Equatable {
         self.planRefreshSeconds = planRefreshSeconds
         self.playlistNameContains = playlistNameContains
         self.releaseOnExit = releaseOnExit
+        self.autoServiceTime = autoServiceTime
+        self.serviceLeadMinutes = serviceLeadMinutes
+        self.onlyDuringServices = onlyDuringServices
+        self.serviceWindowMinutes = serviceWindowMinutes
     }
 }
 
@@ -53,6 +78,8 @@ public struct Decision {
     public var liveItem: PlanItem?
     public var steps = 0
     public var liveNote = ""
+    /// From the matcher: something about this match to double-check.
+    public var warning = ""
 
     public init(_ action: String, _ reason: String = "", ppName: String? = nil, target: PlanItem? = nil,
                 liveItem: PlanItem? = nil, steps: Int = 0, liveNote: String = "") {
@@ -73,7 +100,8 @@ public struct Decision {
             head += "; LIVE on \(liveNote.isEmpty ? titleOf(liveItem) : liveNote)"
         }
         head = head.trimmingCharacters(in: CharacterSet(charactersIn: "; "))
-        return head.isEmpty ? "[\(action)] \(reason)" : "[\(action)] \(head): \(reason)"
+        let check = warning.isEmpty ? "" : " (check: \(warning))"
+        return head.isEmpty ? "[\(action)] \(reason)" : "[\(action)] \(head): \(reason)\(check)"
     }
 }
 
@@ -114,6 +142,8 @@ public final class SyncEngine {
     public let matchSettings: MatchSettings
     public let armed: Bool
     let clock: () -> Double
+    /// Wall-clock time, for service times.
+    let now: () -> Date
     let log: Logger?
 
     public private(set) var me: String?
@@ -149,7 +179,7 @@ public final class SyncEngine {
     public init(pco: PCOClient, pp: ProPresenterClient, serviceTypeId: String, planId: String,
                 settings: SyncSettings = SyncSettings(), matchSettings: MatchSettings = MatchSettings(),
                 armed: Bool = false, clock: @escaping () -> Double = { ProcessInfo.processInfo.systemUptime },
-                log: Logger? = nil) {
+                now: @escaping () -> Date = Date.init, log: Logger? = nil) {
         self.pco = pco
         self.pp = pp
         self.serviceTypeId = serviceTypeId
@@ -158,6 +188,7 @@ public final class SyncEngine {
         self.matchSettings = matchSettings
         self.armed = armed
         self.clock = clock
+        self.now = now
         self.log = log
         self.matcher = Matcher([], matchSettings)
     }
@@ -170,6 +201,7 @@ public final class SyncEngine {
     public func loadPlan() throws {
         let newItems = try pco.planItems(st, plan)
         let times = try pco.planTimes(st, plan).filter { $0.timeType == "service" }
+        let changed = newItems != items || loadedAt == 0
         items = newItems
         planTimes = times.enumerated().sorted { ($0.element.startsAt ?? "", $0.offset) < ($1.element.startsAt ?? "", $1.offset) }.map(\.element)
         matcher = Matcher(items, matchSettings)
@@ -188,7 +220,8 @@ public final class SyncEngine {
         if me == nil { me = pco.meId() }
         loadedAt = clock()
         playlistCache.removeAll()
-        log?.info("Loaded plan \(plan): \(items.count) items (\(items.filter(\.isHeader).count) headers), \(planTimes.count) service time(s)")
+        let msg = "Loaded plan \(plan): \(items.count) items (\(items.filter(\.isHeader).count) headers), \(planTimes.count) service time(s)"
+        if changed { log?.info(msg) } else { log?.debug(msg) }
     }
 
     // MARK: operator commands
@@ -310,7 +343,7 @@ public final class SyncEngine {
 
         let playlist = self.playlist(active)
         let result = matcher.match(item, playlist)
-        guard let target = result.item else {
+        guard let matched = result.item else {
             return Decision("skip", "unmatched (\(result.reason))", ppName: name)
         }
 
@@ -318,18 +351,15 @@ public final class SyncEngine {
         do {
             live = try pco.liveState(st, plan)
         } catch {
-            return Decision("error", "PCO unreachable: \(error)", ppName: name, target: target)
+            return Decision("error", "PCO unreachable: \(error)", ppName: name, target: matched)
         }
         lastLive = live
 
         var liveItem = itemsById[live.currentItemId ?? ""]
         let cur = position(live)
         var note = liveNote(live, cur)
-        guard let tgt = targetSlot(live, target) else {
-            return Decision("skip", "target item not in loaded plan; try 'reload'", ppName: name, target: target, liveItem: liveItem, liveNote: note)
-        }
         if live.currentItemId != nil && cur == nil {
-            return Decision("skip", "LIVE is on an item not in the loaded plan; try 'reload'", ppName: name, target: target, liveItem: liveItem, liveNote: note)
+            return Decision("skip", "LIVE is on an item not in the loaded plan; try 'reload'", ppName: name, target: matched, liveItem: liveItem, liveNote: note)
         }
         var curI = cur ?? -1
         if !armed, let sim = simulated, sim.0 == curI {
@@ -340,18 +370,34 @@ public final class SyncEngine {
                 liveItem = nil
             }
         }
+        guard let choice = chooseTarget(live, curI, [matched] + result.alternatives) else {
+            return Decision("skip", "target item not in loaded plan; try 'reload'", ppName: name, target: matched, liveItem: liveItem, liveNote: note)
+        }
+        let (target, tgt) = choice
+        var base = Decision("", ppName: name, target: target, liveItem: liveItem, liveNote: note)
+        base.warning = result.warning
         if curI == tgt {
-            return Decision("in_sync", "already there (\(result.method))", ppName: name, target: target, liveItem: liveItem, liveNote: note)
+            base.action = "in_sync"
+            base.reason = "already there (\(result.method))"
+            return base
         }
 
         let steps = estimateSteps(curI, tgt)
+        let jump = jumpSize(curI, tgt, playlist)
         let direction = tgt > curI ? "forward" : "back"
-        var base = Decision("", ppName: name, target: target, liveItem: liveItem, steps: steps, liveNote: note)
+        base.steps = steps
 
-        if steps > settings.maxJump && !confirmOnce {
+        if jump > settings.maxJump && !confirmOnce {
             base.action = "refused"
-            base.reason = "would move \(direction) \(steps) items (> max_jump \(settings.maxJump)); "
+            base.reason = "would move \(direction) past \(jump - 1) matched item(s) (> max_jump \(settings.maxJump)); "
                 + "type 'confirm' to allow once, or 'next-service' if a new service time started"
+            return base
+        }
+
+        let outside = outsideServiceTimes()
+        if armed && outside {
+            base.action = "skip"
+            base.reason = "not near a service time (rehearsal or run-through?); LIVE not moved"
             return base
         }
 
@@ -365,13 +411,71 @@ public final class SyncEngine {
         if !armed {
             simulated = (cur ?? -1, tgt)
             let ctrlNote = ["none": "; would take control", "other": "; would TAKE OVER control"][ctrl] ?? ""
+            let timeNote = outside ? "; armed would not move now: not near a service time" : ""
             base.action = "dry_run"
-            base.reason = "would move \(direction) \(steps) item(s) [\(result.method)]\(ctrlNote)"
+            base.reason = "would move \(direction) \(steps) item(s) [\(result.method)]\(ctrlNote)\(timeNote)"
             return base
         }
 
         confirmOnce = false
         return move(live, curI, tgt, ctrl, base)
+    }
+
+    /// Which of the candidate plan items (the match, plus identical items it
+    /// could equally be) to target, and in which service time.
+    func chooseTarget(_ live: LiveState, _ cur: Int, _ candidates: [PlanItem]) -> (PlanItem, Int)? {
+        func pick(_ rank: Int) -> (PlanItem, Int)? {
+            let options = candidates.compactMap { c in slotIndex[SlotKey(pt: ptId(rank), item: c.id)].map { (c, $0) } }
+            guard let first = options.first else { return nil }
+            // The next one at or ahead of LIVE, else the match itself.
+            return options.filter { $0.1 >= cur }.min { $0.1 < $1.1 } ?? first
+        }
+        let rank = effectivePt(live)
+        guard let choice = pick(rank) else { return nil }
+        // ProPresenter went back to the start while the next service is about
+        // to begin: that's the next service starting, not a rewind.
+        if selectedPt == nil, settings.autoServiceTime, let c = clockRank(), c > rank,
+           livePt(live) == nil || choice.1 < cur || slots[max(cur, 0)].item == nil {
+            if let next = pick(c) {
+                if lastPtRank != c { log?.info("Service time \(c + 1) of \(planTimes.count)\(ptLabel(c)) has started") }
+                lastPtRank = c
+                return next
+            }
+        }
+        return choice
+    }
+
+    /// The service time the clock says is on (from `serviceLeadMinutes` before
+    /// it starts), or nil before the first one / without times.
+    func clockRank() -> Int? {
+        let t = now()
+        var rank: Int?
+        for (n, pt) in planTimes.enumerated() {
+            if let s = pt.start, s.addingTimeInterval(-settings.serviceLeadMinutes * 60) <= t { rank = n }
+        }
+        return rank
+    }
+
+    /// True when the plan has service times and none is on now.
+    func outsideServiceTimes() -> Bool {
+        guard settings.onlyDuringServices else { return false }
+        let starts = planTimes.compactMap(\.start)
+        if starts.isEmpty { return false }
+        let t = now()
+        return !starts.contains {
+            $0.addingTimeInterval(-settings.serviceLeadMinutes * 60) <= t && t <= $0.addingTimeInterval(settings.serviceWindowMinutes * 60)
+        }
+    }
+
+    /// How big a move is, counting only plan items ProPresenter could fire:
+    /// matched items passed over, plus the target.
+    func jumpSize(_ cur: Int, _ tgt: Int, _ playlist: [PPPlaylistItem]?) -> Int {
+        guard let pl = playlist, !pl.isEmpty else { return estimateSteps(cur, tgt) }
+        let reachable = matcher.reachableItemIds(pl)
+        let lo = min(cur, tgt), hi = max(cur, tgt)
+        if hi - lo <= 1 { return 1 }
+        let passed = slots[(lo + 1)..<hi].filter { s in s.item.map { !$0.isHeader && reachable.contains($0.id) } ?? false }.count
+        return passed + 1
     }
 
     // MARK: writes
@@ -502,10 +606,6 @@ public final class SyncEngine {
         }
         let rank = livePt(live) ?? effectivePt(live)
         return slotIndex[SlotKey(pt: ptId(rank), item: itemId)]
-    }
-
-    func targetSlot(_ live: LiveState, _ target: PlanItem) -> Int? {
-        slotIndex[SlotKey(pt: ptId(effectivePt(live)), item: target.id)]
     }
 
     func estimateSteps(_ cur: Int, _ tgt: Int) -> Int {

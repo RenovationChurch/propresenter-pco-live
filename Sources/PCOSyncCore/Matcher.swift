@@ -400,13 +400,15 @@ func firstLine(_ text: String) -> String {
 }
 
 /// Offset in `playlist` of the entry ProPresenter reports as active.
+/// ProPresenter gives every copy of a presentation in a playlist the same
+/// uuid (a song used twice), so the index decides between copies.
 func findEntry(_ active: PPRef, _ playlist: [PPPlaylistItem]) -> Int? {
-    if !active.uuid.isEmpty, let n = playlist.firstIndex(where: { $0.uuid == active.uuid }) {
-        return n
-    }
+    let sameUUID = active.uuid.isEmpty ? [] : playlist.indices.filter { playlist[$0].uuid == active.uuid }
+    if sameUUID.count == 1 { return sameUUID[0] }
     if let idx = active.index {
-        if let n = playlist.firstIndex(where: { $0.index == idx }) { return n }
-        if idx >= 0 && idx < playlist.count && playlist[idx].name == active.name { return idx }
+        let pool = sameUUID.isEmpty ? Array(playlist.indices) : sameUUID
+        if let n = pool.first(where: { playlist[$0].index == idx }) { return n }
+        if sameUUID.isEmpty && idx >= 0 && idx < playlist.count && playlist[idx].name == active.name { return idx }
     }
-    return nil
+    return sameUUID.first
 }

@@ -40,7 +40,8 @@ func oct25Items() -> [PlanItem] {
 }
 
 func handBuilt(_ names: [String]) -> [PPPlaylistItem] {
-    names.enumerated().map { PPPlaylistItem(uuid: "u\($0)", name: $1, index: $0, type: "presentation", isPCO: false, isHidden: false) }
+    // Copies of a presentation share one uuid, as in ProPresenter.
+    names.enumerated().map { PPPlaylistItem(uuid: "u\(names.firstIndex(of: $1)!)", name: $1, index: $0, type: "presentation", isPCO: false, isHidden: false) }
 }
 
 func oct25Harness(armed: Bool = true, playlist: [String] = OCT25_PLAYLIST, wall: String = "2026-10-25T13:05:00Z") -> Harness {
@@ -112,6 +113,16 @@ final class RealPlanMatchTests: XCTestCase {
         XCTAssertNil(m.match(ref("Hillsong Medley")).item)
     }
 
+    func testRepeatedSongCopiesShareUUID() {
+        let m = Matcher(oct25Items())
+        let pl = handBuilt(OCT25_PLAYLIST)
+        let at = { (n: Int) in m.match(PPRef(uuid: pl[n].uuid, name: pl[n].name, index: n), pl).item?.id }
+        XCTAssertEqual(pl[4].uuid, pl[6].uuid)
+        XCTAssertEqual(at(6), "wawn2")
+        XCTAssertEqual(at(4), "wawn1")
+        XCTAssertEqual(at(11), "jtg2")
+    }
+
     func testHeadersAreNeverTargets() {
         // "Closing" must not land on the CLOSING WORSHIP header.
         XCTAssertEqual(Matcher(oct25Items()).match(ref("Closing")).item?.id, "hostc")
@@ -142,6 +153,22 @@ final class RealPlanEngineTests: XCTestCase {
         let d = h.fireAt(3)
         XCTAssertEqual(d.action, "moved", d.describe())
         XCTAssertEqual(h.liveId, "wawn2")
+    }
+
+    func testSecondCopyOfRepeatedSongMovesForward() {
+        let h = oct25Harness()
+        h.pcoFake.place("jbtn")
+        h.pcoFake.controller = ME
+        XCTAssertEqual(h.fireAt(4).action, "moved")
+        XCTAssertEqual(h.liveId, "wawn1")
+        h.fireAt(5)
+        let d = h.fireAt(6)
+        XCTAssertEqual(d.action, "moved", d.describe())
+        XCTAssertEqual(h.liveId, "wawn2")
+        h.pcoFake.place("hostc")
+        let c = h.fireAt(11)
+        XCTAssertEqual(c.action, "moved", c.describe())
+        XCTAssertEqual(h.liveId, "jtg2")
     }
 
     func testNextServiceStartsOnItsOwn() {

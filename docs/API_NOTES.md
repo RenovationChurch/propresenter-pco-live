@@ -39,7 +39,7 @@ From Renewed Vision's OpenAPI spec (openapi.propresenter.com; a copy is in `alxp
 
 To verify on the Mac: `curl http://127.0.0.1:<port>/v1/playlist/active`, then `curl http://127.0.0.1:<port>/v1/playlist/<uuid>`.
 
-**Open question:** is `item.uuid` from `/v1/playlist/active` the same as the playlist entry's `id.uuid`? The matcher looks the entry up by uuid first, then by index plus name, so it copes either way.
+**Repeated presentations:** every copy of a presentation in a playlist (a song used twice, e.g. before and after baptisms) has the same uuid, both as `item.uuid` from `/v1/playlist/active` and as the entry's `id.uuid`. The uuid alone can't tell the copies apart, so the matcher uses it only when it is unique in the playlist and otherwise picks the copy by `item.index`.
 
 ## Read-only commands to run first
 

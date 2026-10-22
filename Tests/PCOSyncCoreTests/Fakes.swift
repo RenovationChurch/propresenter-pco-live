@@ -228,7 +228,11 @@ final class FakeProPresenter {
     }
 
     private func assignUUIDs() {
-        for n in playlist.indices where playlist[n].uuid.isEmpty { playlist[n].uuid = "pp-\(n)" }
+        // Like ProPresenter: every copy of a presentation shares one uuid.
+        for n in playlist.indices where playlist[n].uuid.isEmpty {
+            let first = playlist.firstIndex { $0.name == playlist[n].name }!
+            playlist[n].uuid = "pp-\(first)"
+        }
     }
 
     func fire(_ name: String) {

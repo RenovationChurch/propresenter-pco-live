@@ -123,17 +123,18 @@ class Matcher:
 
 
 def _find_entry(active: PPRef, playlist: list[PPPlaylistItem]) -> PPPlaylistItem | None:
-    if active.uuid:
-        for p in playlist:
-            if p.uuid == active.uuid:
-                return p
+    # ProPresenter gives every copy of a presentation in a playlist the same
+    # uuid (a song used twice), so the index decides between copies.
+    same_uuid = [p for p in playlist if p.uuid == active.uuid] if active.uuid else []
+    if len(same_uuid) == 1:
+        return same_uuid[0]
     if active.index is not None:
-        for p in playlist:
+        for p in same_uuid or playlist:
             if p.index == active.index:
                 return p
-        if 0 <= active.index < len(playlist) and playlist[active.index].name == active.name:
+        if not same_uuid and 0 <= active.index < len(playlist) and playlist[active.index].name == active.name:
             return playlist[active.index]
-    return None
+    return same_uuid[0] if same_uuid else None
 
 
 def _occurrence_rank(

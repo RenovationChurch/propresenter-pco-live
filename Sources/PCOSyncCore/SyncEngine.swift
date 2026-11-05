@@ -467,6 +467,28 @@ public final class SyncEngine {
         }
     }
 
+    /// For auto-arm: whether a service time is on now (from
+    /// `serviceLeadMinutes` before it starts until `serviceWindowMinutes`
+    /// after), and when that next changes. Overlapping windows (9:00 and
+    /// 10:50) count as one, so it stays armed between them. Plans without
+    /// service times are never "on". Ignores `onlyDuringServices`.
+    public func serviceWindow() -> (open: Bool, nextChange: Date?) {
+        let lead = settings.serviceLeadMinutes * 60, len = settings.serviceWindowMinutes * 60
+        let windows = planTimes.compactMap(\.start).sorted().map { ($0.addingTimeInterval(-lead), $0.addingTimeInterval(len)) }
+        // Merge overlapping windows.
+        var merged: [(Date, Date)] = []
+        for w in windows {
+            if let last = merged.last, w.0 <= last.1 {
+                merged[merged.count - 1].1 = max(last.1, w.1)
+            } else {
+                merged.append(w)
+            }
+        }
+        let t = now()
+        if let on = merged.first(where: { $0.0 <= t && t <= $0.1 }) { return (true, on.1) }
+        return (false, merged.first(where: { $0.0 > t })?.0)
+    }
+
     /// How big a move is, counting only plan items ProPresenter could fire:
     /// matched items passed over, plus the target.
     func jumpSize(_ cur: Int, _ tgt: Int, _ playlist: [PPPlaylistItem]?) -> Int {

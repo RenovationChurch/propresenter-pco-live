@@ -115,6 +115,7 @@ textarea { min-height: 90px; font-family: ui-monospace, SFMono-Regular, Menlo, m
     <div class="row">
       <button class="b primary" id="btn-dry">Start dry-run</button>
       <button class="b danger" id="btn-arm">Arm (move LIVE)…</button>
+      <button class="b" id="btn-auto" title="Dry-run until a service time comes up, armed while it's on, then gives LIVE control back">Auto-arm at service times…</button>
       <button class="b" id="btn-stop">Stop</button>
       <span style="width:12px"></span>
       <button class="b" id="btn-pause">Pause</button>
@@ -128,6 +129,7 @@ textarea { min-height: 90px; font-family: ui-monospace, SFMono-Regular, Menlo, m
       <button class="b" data-cmd="next-service">Next ▶</button>
       <button class="b" data-cmd="auto-service">Automatic</button>
     </div>
+    <div id="auto-out" class="sub" style="margin-top:8px"></div>
     <div id="cmd-out" class="sub" style="margin-top:8px"></div>
   </section>
 
@@ -204,7 +206,11 @@ textarea { min-height: 90px; font-family: ui-monospace, SFMono-Regular, Menlo, m
     </fieldset>
     <fieldset><legend>App</legend>
       <label class="inline"><input type="checkbox" id="f-autostart"> Start syncing when the app launches</label>
-      <label class="inline"><input type="checkbox" id="f-startarmed"> …and start armed (moves LIVE without anyone pressing Arm)</label>
+      <label>…starting in<select id="f-startmode">
+        <option value="dry">Dry-run (press Arm to move LIVE)</option>
+        <option value="auto">Auto-arm: arm around service times, disarm after</option>
+        <option value="armed">Armed (moves LIVE without anyone pressing Arm)</option>
+      </select><span class="hint">Auto-arm arms itself from the lead time above before each service and disarms once the last one's time is up.</span></label>
       <div class="two">
         <label>Log level<select id="f-loglevel"><option>DEBUG</option><option>INFO</option><option>WARNING</option><option>ERROR</option></select></label>
         <label>Dashboard port<input type="number" id="f-webport" min="1024" max="65535"></label>
@@ -256,8 +262,16 @@ function render(s) {
   status = s;
   const mode = $("mode");
   if (!s.running) { mode.textContent = "STOPPED"; mode.className = "badge"; }
-  else if (s.armed) { mode.textContent = "ARMED"; mode.className = "badge armed"; }
-  else { mode.textContent = "DRY-RUN"; mode.className = "badge dry"; }
+  else if (s.armed) { mode.textContent = s.mode === "auto" ? "AUTO · ARMED" : "ARMED"; mode.className = "badge armed"; }
+  else { mode.textContent = s.mode === "auto" ? "AUTO · DRY-RUN" : "DRY-RUN"; mode.className = "badge dry"; }
+  const aa = s.autoArm, hm = (t) => new Date(t).toLocaleString([], { weekday: "short", hour: "numeric", minute: "2-digit" });
+  let autoText = "";
+  if (s.running && s.mode === "auto" && aa) {
+    if (!aa.hasServiceTimes) autoText = "Auto-arm: this plan has no service times, so it won't arm. Press Arm to move LIVE.";
+    else if (aa.open) autoText = "Auto-arm: armed for the service" + (aa.nextChange ? "; disarms " + hm(aa.nextChange) : "") + ".";
+    else autoText = "Auto-arm: dry-run" + (aa.nextChange ? "; arms " + hm(aa.nextChange) : " until the next plan loads") + ".";
+  }
+  $("auto-out").textContent = autoText;
   const labels = { stopped: "Not syncing", starting: "Starting…", running: s.paused ? "Paused" : "Syncing", waiting: "Waiting to connect", needs_setup: "Needs setup", stopping: "Stopping…" };
   $("state").textContent = labels[s.state] || s.state;
 
@@ -290,8 +304,9 @@ function render(s) {
   $("last").innerHTML = ld ? '<span class="a-' + esc(ld.action) + '">' + esc(ld.text) + "</span>" : "—";
   $("last-t").textContent = ld ? time(ld.time) : "";
 
-  $("btn-dry").disabled = s.running && !s.armed;
-  $("btn-arm").disabled = s.running && s.armed;
+  $("btn-dry").disabled = s.running && s.mode === "dry";
+  $("btn-arm").disabled = s.running && s.mode === "armed";
+  $("btn-auto").disabled = s.running && s.mode === "auto";
   $("btn-stop").disabled = !s.running;
   $("btn-pause").textContent = s.paused ? "Resume" : "Pause";
   ["btn-pause", "btn-confirm", "btn-reload"].forEach((id) => $(id).disabled = s.state !== "running");
@@ -324,10 +339,14 @@ async function cmd(c) {
   try { const r = await api("POST", "/api/command", { command: c }); $("cmd-out").textContent = r.message; poll(); }
   catch (e) { toast(e.message); }
 }
-$("btn-dry").onclick = async () => { try { toast((await api("POST", "/api/start", { armed: false })).message); poll(); } catch (e) { toast(e.message); } };
+$("btn-dry").onclick = async () => { try { toast((await api("POST", "/api/start", { mode: "dry" })).message); poll(); } catch (e) { toast(e.message); } };
+$("btn-auto").onclick = async () => {
+  if (!confirm("Auto-arm PCOSync?\n\nIt stays in dry-run until a service time comes up, then takes LIVE control and moves LIVE to follow ProPresenter. After the last service it gives LIVE control back.")) return;
+  try { toast((await api("POST", "/api/start", { mode: "auto" })).message); poll(); } catch (e) { toast(e.message); }
+};
 $("btn-arm").onclick = async () => {
   if (!confirm("Arm PCOSync?\n\nIt will take LIVE control in Planning Center and move LIVE to follow ProPresenter around service times.")) return;
-  try { toast((await api("POST", "/api/start", { armed: true })).message); poll(); } catch (e) { toast(e.message); }
+  try { toast((await api("POST", "/api/start", { mode: "armed" })).message); poll(); } catch (e) { toast(e.message); }
 };
 $("btn-stop").onclick = async () => { try { $("btn-stop").disabled = true; toast((await api("POST", "/api/stop")).message); poll(); } catch (e) { toast(e.message); } };
 $("btn-pause").onclick = () => cmd(status && status.paused ? "resume" : "pause");
@@ -381,7 +400,7 @@ async function loadConfig() {
     $("f-ignore").value = c.match.ignore.join("\n");
     $("f-aliases").value = Object.entries(c.match.aliases).map(([k, v]) => k + " = " + v).join("\n");
     $("f-positional").checked = c.match.positionalFallback;
-    $("f-autostart").checked = c.app.autoStart; $("f-startarmed").checked = c.app.startArmed; $("f-loglevel").value = c.app.logLevel;
+    $("f-autostart").checked = c.app.autoStart; $("f-startmode").value = c.app.startMode || (c.app.startArmed ? "armed" : "dry"); $("f-loglevel").value = c.app.logLevel;
     $("f-webport").value = c.web.port; $("f-remote").checked = c.web.allowRemote; $("f-webpw").value = "";
     if (r.credentials.saved) { loadServiceTypes(true); }
   } catch (e) { toast(e.message); }
@@ -437,7 +456,7 @@ $("cfg-form").onsubmit = async (e) => {
             planRefreshSeconds: num("f-refresh"), playlistNameContains: $("f-plfilter").value.trim(), releaseOnExit: $("f-release").checked,
             autoServiceTime: $("f-autosvc").checked, onlyDuringServices: $("f-onlysvc").checked, serviceLeadMinutes: num("f-lead"), serviceWindowMinutes: num("f-window") },
     match: { ignore: $("f-ignore").value.split("\n").map((s) => s.trim()).filter(Boolean), aliases, positionalFallback: $("f-positional").checked },
-    app: { autoStart: $("f-autostart").checked, startArmed: $("f-startarmed").checked, logLevel: $("f-loglevel").value },
+    app: { autoStart: $("f-autostart").checked, startMode: $("f-startmode").value, startArmed: $("f-startmode").value === "armed", logLevel: $("f-loglevel").value },
     web: { port: num("f-webport"), allowRemote: $("f-remote").checked, password: $("f-webpw").value },
   };
   try { const r = await api("PUT", "/api/config", c); $("save-out").textContent = r.message; toast(r.message); }

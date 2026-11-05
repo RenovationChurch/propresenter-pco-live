@@ -41,8 +41,23 @@ public struct AppSettings: Codable, Equatable {
     /// Start syncing when the app launches.
     public var autoStart = true
     /// Start armed (moving LIVE) when the app launches. Off = dry-run.
+    /// Superseded by `startMode`; still read from older settings files.
     public var startArmed = false
+    /// How to start at launch: "dry", "armed" or "auto" (arm itself around
+    /// service times). nil = from `startArmed`.
+    public var startMode: String?
     public var logLevel = "INFO"
+
+    public var launchMode: SyncMode {
+        startMode.flatMap(SyncMode.init(rawValue:)) ?? (startArmed ? .armed : .dryRun)
+    }
+}
+
+/// dryRun: never writes. armed: moves LIVE (around service times unless
+/// that's turned off). auto: dry-run until a service time comes on, armed
+/// while it is, then gives LIVE control back and goes back to dry-run.
+public enum SyncMode: String, Codable {
+    case dryRun = "dry", armed, auto
 }
 
 public struct AppConfig: Codable, Equatable {
@@ -77,6 +92,7 @@ public struct AppConfig: Codable, Equatable {
         if !(1024...65535).contains(web.port) { errs.append("web port must be 1024-65535") }
         if web.allowRemote && web.password.count < 6 { errs.append("remote access needs a password of 6+ characters") }
         if pco.plan.trimmingCharacters(in: .whitespaces).isEmpty { errs.append("plan must be 'auto', 'next' or a plan ID") }
+        if let m = app.startMode, SyncMode(rawValue: m) == nil { errs.append("start mode must be dry, armed or auto") }
         if sync.serviceLeadMinutes < 0 { errs.append("service lead time can't be negative") }
         if sync.serviceWindowMinutes < 30 { errs.append("service length must be at least 30 minutes") }
         for p in match.ignore where p.hasPrefix(regexPrefix) {

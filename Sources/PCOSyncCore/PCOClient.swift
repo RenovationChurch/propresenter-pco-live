@@ -249,15 +249,21 @@ public final class PCOClient {
     /// The plan to follow for these settings. "auto" looks across service
     /// types (all of them unless `serviceTypeIds` names some) for the plan
     /// that has songs and whose services are on now or come up soonest. A
-    /// plan counts as on until `windowMinutes` after its last service starts.
-    public func resolvePlan(_ s: PCOSettings, now: Date = Date(), windowMinutes: Double = 180) throws -> PlanRef {
+    /// service is on from `leadMinutes` before it starts until `windowMinutes`
+    /// after. When services in two plans overlap, the one that started most
+    /// recently wins, so the next plan takes over at its preroll instead of
+    /// waiting for the last plan's window to run out.
+    public func resolvePlan(_ s: PCOSettings, now: Date = Date(), windowMinutes: Double = 180,
+                            leadMinutes: Double = 20) throws -> PlanRef {
         if s.plan != "auto" {
             if s.serviceTypeId.isEmpty { throw PCOError("choose a service type in Settings first") }
             return PlanRef(serviceTypeId: s.serviceTypeId, planId: try resolvePlanId(s.serviceTypeId, s.plan))
         }
         let names = Dictionary(try serviceTypes().map { ($0.id, $0.name) }, uniquingKeysWith: { a, _ in a })
         let types = s.serviceTypeIds.isEmpty ? names.keys.sorted() : s.serviceTypeIds
-        var candidates: [(start: Date, ref: PlanRef)] = []
+        // on: a service is on now (key = when the latest one came on);
+        // otherwise key = when its next service starts.
+        var candidates: [(on: Bool, key: Date, ref: PlanRef)] = []
         for st in types {
             // Only the next few plans per service type can be "now". The most
             // recent past ones too, in case "future" drops a multi-day plan
@@ -269,15 +275,29 @@ public final class PCOClient {
             for d in future + past {
                 guard let id = d.str("id"), seen.insert(id).inserted else { continue }
                 let starts = try planTimes(st, id).filter { $0.timeType == "service" }.compactMap(\.start).sorted()
-                guard let first = starts.first, let last = starts.last,
-                      last.addingTimeInterval(windowMinutes * 60) >= now else { continue }
+                guard let last = starts.last, last.addingTimeInterval(windowMinutes * 60) >= now else { continue }
+                let comesOn = starts.map { $0.addingTimeInterval(-leadMinutes * 60) }
+                let onNow = zip(comesOn, starts).filter { $0.0 <= now && now <= $0.1.addingTimeInterval(windowMinutes * 60) }
                 let a = d.obj("attributes") ?? [:]
                 let title = a.str("title") ?? ""
                 let label = "\(names[st] ?? st): \(a.str("dates") ?? id)\(title.isEmpty ? "" : " – " + title)"
-                candidates.append((first, PlanRef(serviceTypeId: st, planId: id, label: label)))
+                let ref = PlanRef(serviceTypeId: st, planId: id, label: label)
+                if let latest = onNow.last {
+                    candidates.append((true, latest.0, ref))
+                } else if let next = starts.first(where: { $0 > now }) {
+                    candidates.append((false, next, ref))
+                } else {
+                    // Between a finished service's window and nothing later; keep it last.
+                    candidates.append((false, .distantFuture, ref))
+                }
             }
         }
-        for c in candidates.sorted(by: { $0.start < $1.start }) {
+        // Services on now first, most recently started first; then upcoming, soonest first.
+        let ordered = candidates.sorted { x, y in
+            if x.on != y.on { return x.on }
+            return x.on ? x.key > y.key : x.key < y.key
+        }
+        for c in ordered {
             // Plans with songs are services; workshops and meetings aren't.
             if try planItems(c.ref.serviceTypeId, c.ref.planId).contains(where: { $0.itemType == "song" }) {
                 return c.ref

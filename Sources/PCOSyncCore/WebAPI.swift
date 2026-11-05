@@ -97,9 +97,18 @@ public final class WebAPI {
         case ("POST", "/api/credentials"):
             return try saveCredentials(req)
         case ("POST", "/api/start"):
-            let armed = req.json()?["armed"] as? Bool ?? false
-            service.start(armed: armed)
-            return .json(["ok": true, "message": armed ? "Started ARMED" : "Started dry-run"])
+            let body = req.json()
+            let mode: SyncMode
+            if let m = body?["mode"] as? String {
+                guard let parsed = SyncMode(rawValue: m) else { return error(400, "mode must be dry, armed or auto") }
+                mode = parsed
+            } else {
+                mode = body?["armed"] as? Bool == true ? .armed : .dryRun
+            }
+            service.start(mode: mode)
+            let msg = [SyncMode.dryRun: "Started dry-run", .armed: "Started ARMED",
+                       .auto: "Started auto-arm: arms itself around service times"][mode]!
+            return .json(["ok": true, "message": msg])
         case ("POST", "/api/stop"):
             service.stop()
             return .json(["ok": true, "message": "Stopped"])
@@ -237,7 +246,8 @@ public final class WebAPI {
     func mapping() throws -> JSONObject {
         let cfg = store.config
         let pco = try pcoClient()
-        let ref = try pco.resolvePlan(cfg.pco, now: service.now(), windowMinutes: cfg.sync.serviceWindowMinutes)
+        let ref = try pco.resolvePlan(cfg.pco, now: service.now(), windowMinutes: cfg.sync.serviceWindowMinutes,
+                                      leadMinutes: cfg.sync.serviceLeadMinutes)
         let items = try pco.planItems(ref.serviceTypeId, ref.planId)
         let matcher = Matcher(items, cfg.match)
         let pp = ppClient()

@@ -78,7 +78,7 @@ do {
 }
 
 if store.config.app.autoStart {
-    service.start(armed: store.config.app.startArmed)
+    service.start(mode: store.config.app.launchMode)
 }
 
 func shutdown() {

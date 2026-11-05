@@ -298,4 +298,41 @@ final class AutoPlanTests: XCTestCase {
     func testNextModeStillUsesOneServiceType() throws {
         XCTAssertEqual(try resolve("2026-12-22T12:00:00Z", PCOSettings(serviceTypeId: "20", plan: "next")).planId, "workshop")
     }
+
+    /// Same day, two service types: a morning plan, then an evening event in another plan.
+    func handoffTransport() -> HTTPTransport {
+        ClosureTransport { req in
+            let p = req.path
+            let st = "/services/v2/service_types"
+            switch p {
+            case st:
+                return .json(["data": [["type": "ServiceType", "id": "10", "attributes": ["name": "Weekend Gatherings"]],
+                                       ["type": "ServiceType", "id": "20", "attributes": ["name": "Other Events"]]]])
+            case st + "/10/plans":
+                return .json(["data": [["type": "Plan", "id": "morning", "attributes": ["dates": "December 27, 2026", "title": ""]]]])
+            case st + "/20/plans":
+                return .json(["data": [["type": "Plan", "id": "evening", "attributes": ["dates": "December 27, 2026", "title": "Night of Worship"]]]])
+            default:
+                break
+            }
+            func times(_ ts: [String]) -> HTTPResponse {
+                .json(["data": ts.enumerated().map { ["type": "PlanTime", "id": "t\($0)", "attributes": ["time_type": "service", "starts_at": $1]] }])
+            }
+            if p.hasSuffix("/morning/plan_times") { return times(["2026-12-27T14:00:00Z", "2026-12-27T15:50:00Z"]) }
+            if p.hasSuffix("/evening/plan_times") { return times(["2026-12-27T18:00:00Z"]) }
+            if p.contains("/items") {
+                return .json(["data": [["type": "Item", "id": "i1", "attributes": ["title": "Song", "item_type": "song", "sequence": 1]]]])
+            }
+            return HTTPResponse(status: 404)
+        }
+    }
+
+    func testNextPlanTakesOverAtItsPreroll() throws {
+        let pco = try PCOClient(appId: FAKE_APP_ID, secret: FAKE_SECRET, transport: handoffTransport())
+        // The morning plan's window runs to 18:50, but the evening plan comes on at 17:40.
+        XCTAssertEqual(try pco.resolvePlan(PCOSettings(), now: iso("2026-12-27T13:00:00Z")).planId, "morning")
+        XCTAssertEqual(try pco.resolvePlan(PCOSettings(), now: iso("2026-12-27T17:30:00Z")).planId, "morning")
+        XCTAssertEqual(try pco.resolvePlan(PCOSettings(), now: iso("2026-12-27T17:41:00Z")).planId, "evening")
+        XCTAssertEqual(try pco.resolvePlan(PCOSettings(), now: iso("2026-12-27T19:00:00Z")).planId, "evening")
+    }
 }

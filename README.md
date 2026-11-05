@@ -10,7 +10,7 @@ It doesn't blindly press "next". Each time ProPresenter settles on a playlist it
 
 ## What it does, and what it won't do
 
-- **Dry-run is the default.** It shows what it *would* do and writes nothing to Planning Center. You press **Arm** to let it move LIVE.
+- **Dry-run is the default.** It shows what it *would* do and writes nothing to Planning Center. You press **Arm** to let it move LIVE, or **Auto-arm** to have it arm itself around service times (see below).
 - **It takes LIVE control.** Only one controller can drive LIVE. When armed, it takes control if nobody has it. If a person already has control, it does **not** take over unless you turn on "Take LIVE control even if a person already has it".
 - It **never** moves LIVE for an item on your ignore list, an item with no match, or a header. The activity feed says why.
 - It **never** acts when ProPresenter or Planning Center can't be reached. It retries and shows the problem on the dashboard.
@@ -77,6 +77,7 @@ The dashboard shows what ProPresenter is on, where LIVE is, who controls LIVE, t
 |---|---|
 | **Start dry-run** | Follow ProPresenter and report what it would do. Writes nothing. |
 | **Arm (move LIVE)…** | Follow ProPresenter and move LIVE. Asks to confirm first. |
+| **Auto-arm at service times…** | Dry-run until a service time comes up, armed while one is on, then gives LIVE control back. Asks to confirm first. |
 | **Stop** | Stop following. Releases LIVE control if PCOSync holds it. |
 | **Pause / Resume** | Keep running but don't move LIVE. |
 | **Confirm big move** | Allow the next move once, even if it's bigger than max jump. |
@@ -85,11 +86,26 @@ The dashboard shows what ProPresenter is on, where LIVE is, who controls LIVE, t
 
 The menu-bar icon shows the state at a glance. **ARMED** in red means it's moving LIVE, **DRY** means dry-run, and a warning triangle means it can't reach ProPresenter or Planning Center. The same controls are in its menu.
 
-**Start syncing when the app launches** (on by default) starts it in dry-run at login. **…and start armed** makes it arm itself at launch. Leave that off unless you want LIVE to move without anyone pressing Arm.
+**Start syncing when the app launches** (on by default) starts it at login. **…starting in** picks how: **Dry-run** (the default), **Auto-arm** (recommended once you've tested it), or **Armed**.
+
+### Auto-arm
+
+With **Auto-arm**, nobody has to press Arm on Sunday:
+
+- It runs in dry-run until **20 minutes before** the first service time (Settings › Service times › "A service starts this many minutes early"). Then it arms, takes LIVE control and catches LIVE up to ProPresenter.
+- It stays armed between services, as long as the next one starts within **3 hours** of the last ("A service can run this many minutes"). 9:00 and 10:50 count as one stretch.
+- 3 hours after the **last** service time starts, it gives LIVE control back and goes back to dry-run. The dashboard says when it will next arm or disarm. **AUTO · ARMED** / **AUTO · DRY-RUN** shows in the header and the menu bar.
+- Services on different days (Saturday night and Sunday morning, Christmas Eve) arm and disarm separately.
+- A plan with no service times in PCO never auto-arms. The dashboard says so; press **Arm** if you need it.
+- If you **Pause** before it arms, it stays paused after arming.
+
+To make it the everyday setup: Settings › App › **…starting in** › **Auto-arm**, and turn on **Open at Login** in the menu bar.
 
 ### Multiple service times
 
 LIVE runs through the 9:00 items, then the 10:50 items. From 20 minutes before a service starts (preroll), ProPresenter going back to the start of the playlist moves LIVE into that service instead of rewinding the last one. If the 9:00 runs long, moving *forward* (the closing song at 10:35) stays in the 9:00. This works for any number of services over any number of days (Easter, Christmas).
+
+On **Automatic** plan, it also moves from one plan to the next by itself: once the next plan's first service is within the lead time, that plan takes over, even if the last plan's 3-hour window hasn't run out (a morning service and an evening event in another service type, for example). It checks for the next plan every 5 minutes ("Re-fetch plan every").
 
 If you ever need to, **Previous** / **Next** under Service time override it, and **Automatic** goes back to the clock. Settings › Service times sets the lead time and how long a service can run.
 
@@ -108,9 +124,9 @@ If you ever need to, **Previous** / **Next** under Service time override it, and
 - [ ] **Mapping** tab: every expected item maps.
 - [ ] **Mapping** tab: no yellow banners, and the "no ProPresenter slide" list looks right.
 - [ ] Nobody else needs LIVE control (PCOSync will hold it).
-- [ ] **Arm**.
+- [ ] **Arm** (skip if it's on **Auto-arm**: the header shows **AUTO** and the dashboard says when it arms).
 - [ ] Between services: nothing to do. The next service starts on its own.
-- [ ] After service: **Stop**.
+- [ ] After service: **Stop** (skip on **Auto-arm**: it disarms and gives LIVE control back on its own).
 
 ## Where things live
 

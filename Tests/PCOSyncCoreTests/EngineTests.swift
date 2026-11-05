@@ -332,4 +332,52 @@ final class EngineTests: XCTestCase {
         XCTAssertEqual(d.action, "moved", d.describe())
         XCTAssertEqual(h.liveTitle, "Benediction")
     }
+
+    // MARK: auto-arm window (fake services 13:00Z and 15:00Z, 20 min lead, 180 min long)
+
+    func testServiceWindowOpensAtLeadTime() {
+        let h = Harness()
+        h.clock.wall = iso("2026-10-18T12:39:00Z")
+        var w = h.engine.serviceWindow()
+        XCTAssertFalse(w.open)
+        XCTAssertEqual(w.nextChange, iso("2026-10-18T12:40:00Z"))
+        h.clock.wall = iso("2026-10-18T12:40:00Z")
+        w = h.engine.serviceWindow()
+        XCTAssertTrue(w.open)
+    }
+
+    func testServiceWindowStaysOpenBetweenServices() {
+        let h = Harness()
+        h.clock.wall = iso("2026-10-18T14:30:00Z")  // between 9:00 and 11:00
+        let w = h.engine.serviceWindow()
+        XCTAssertTrue(w.open)
+        XCTAssertEqual(w.nextChange, iso("2026-10-18T18:00:00Z"))  // 3 h after the last one
+    }
+
+    func testServiceWindowClosesAfterLastService() {
+        let h = Harness()
+        h.clock.wall = iso("2026-10-18T18:01:00Z")
+        let w = h.engine.serviceWindow()
+        XCTAssertFalse(w.open)
+        XCTAssertNil(w.nextChange)
+    }
+
+    func testServiceWindowSeparateDays() {
+        let fake = FakePCO()
+        fake.planTimes = [("sat", "service", "2026-10-17T22:00:00Z"), ("sun", "service", "2026-10-18T14:00:00Z")]
+        let h = Harness(pco: fake)
+        h.clock.wall = iso("2026-10-18T06:00:00Z")  // overnight
+        let w = h.engine.serviceWindow()
+        XCTAssertFalse(w.open)
+        XCTAssertEqual(w.nextChange, iso("2026-10-18T13:40:00Z"))
+    }
+
+    func testServiceWindowNeverOpensWithoutServiceTimes() {
+        let fake = FakePCO()
+        fake.planTimes = [("rh", "rehearsal", "2026-10-18T13:00:00Z")]
+        let h = Harness(pco: fake)
+        let w = h.engine.serviceWindow()
+        XCTAssertFalse(w.open)
+        XCTAssertNil(w.nextChange)
+    }
 }

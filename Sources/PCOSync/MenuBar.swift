@@ -69,8 +69,9 @@ final class MenuBarController: NSObject, NSApplicationDelegate, NSMenuDelegate {
             || ((s["propresenter"] as? [String: Any])?["ok"] as? Bool == false)
             || ((s["live"] as? [String: Any])?["ok"] as? Bool == false)
 
+        let auto = s["mode"] as? String == "auto"
         let symbol: String
-        let text: String
+        var text: String
         if !running {
             symbol = "pause.circle"; text = ""
         } else if problem {
@@ -80,6 +81,7 @@ final class MenuBarController: NSObject, NSApplicationDelegate, NSMenuDelegate {
         } else {
             symbol = armed ? "dot.radiowaves.left.and.right" : "eye"; text = armed ? " ARMED" : " DRY"
         }
+        if running && auto && !text.isEmpty { text = " AUTO" + text }
         let image = NSImage(systemSymbolName: symbol, accessibilityDescription: "PCOSync")
         image?.isTemplate = true
         button.image = image
@@ -97,7 +99,7 @@ final class MenuBarController: NSObject, NSApplicationDelegate, NSMenuDelegate {
         let armed = s["armed"] as? Bool ?? false
         let state = s["state"] as? String ?? ""
         let paused = s["paused"] as? Bool ?? false
-        let mode = armed ? "ARMED" : "Dry-run"
+        let mode = (s["mode"] as? String == "auto" ? "Auto-arm, " : "") + (armed ? "ARMED" : "Dry-run")
         switch state {
         case "needs_setup": return "Needs setup: \(s["detail"] as? String ?? "")"
         case "waiting": return "Waiting to connect: \(s["detail"] as? String ?? "")"
@@ -112,7 +114,7 @@ final class MenuBarController: NSObject, NSApplicationDelegate, NSMenuDelegate {
         menu.removeAllItems()
         let s = service.snapshot()
         let running = s["running"] as? Bool ?? false
-        let armed = s["armed"] as? Bool ?? false
+        let mode = s["mode"] as? String ?? ""
         let paused = s["paused"] as? Bool ?? false
         let isRunningState = (s["state"] as? String) == "running"
 
@@ -131,8 +133,9 @@ final class MenuBarController: NSObject, NSApplicationDelegate, NSMenuDelegate {
         menu.addItem(item("Open Dashboard…", #selector(openDashboardAction), key: "d"))
         menu.addItem(.separator())
 
-        if !running || armed { menu.addItem(item("Start Dry-Run", #selector(startDry))) }
-        if !running || !armed { menu.addItem(item("Arm (Move LIVE)…", #selector(arm))) }
+        if !running || mode != "dry" { menu.addItem(item("Start Dry-Run", #selector(startDry))) }
+        if !running || mode != "armed" { menu.addItem(item("Arm (Move LIVE)…", #selector(arm))) }
+        if !running || mode != "auto" { menu.addItem(item("Auto-Arm at Service Times…", #selector(autoArm))) }
         if running { menu.addItem(item("Stop", #selector(stop))) }
         if isRunningState {
             menu.addItem(item(paused ? "Resume" : "Pause", #selector(togglePause)))
@@ -192,6 +195,17 @@ final class MenuBarController: NSObject, NSApplicationDelegate, NSMenuDelegate {
         a.addButton(withTitle: "Cancel")
         a.alertStyle = .warning
         if a.runModal() == .alertFirstButtonReturn { background { $0.start(armed: true) } }
+    }
+
+    @objc func autoArm() {
+        NSApp.activate(ignoringOtherApps: true)
+        let a = NSAlert()
+        a.messageText = "Auto-arm PCOSync?"
+        a.informativeText = "It stays in dry-run until a service time comes up, then takes LIVE control and moves LIVE to follow ProPresenter. After the last service it gives LIVE control back."
+        a.addButton(withTitle: "Auto-Arm")
+        a.addButton(withTitle: "Cancel")
+        a.alertStyle = .warning
+        if a.runModal() == .alertFirstButtonReturn { background { $0.start(mode: .auto) } }
     }
 
     @objc func stop() { background { $0.stop() } }

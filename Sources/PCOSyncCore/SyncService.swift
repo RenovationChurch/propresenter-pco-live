@@ -2,6 +2,10 @@
 // The web UI and the menu bar talk to this, never to the engine directly:
 // the engine isn't thread-safe, so commands are queued to the worker thread
 // and the worker publishes a status snapshot after every tick.
+//
+// Auto mode: the worker runs a dry-run engine until a service time comes on
+// (`serviceLeadMinutes` before it starts), swaps in an armed engine for as
+// long as one is on, then gives LIVE control back and goes back to dry-run.
 
 import Foundation
 
@@ -25,6 +29,8 @@ public final class SyncService {
     private var pending: [(String, (String) -> Void)] = []
     private var _state: State = .stopped
     private var _detail = ""
+    private var _mode: SyncMode = .dryRun
+    /// Whether the engine running now moves LIVE (in auto mode it changes).
     private var _armed = false
     private var _snapshot: JSONObject = [:]
     private var _events: [JSONObject] = []
@@ -47,13 +53,16 @@ public final class SyncService {
 
     public var state: State { cond.lock(); defer { cond.unlock() }; return _state }
     public var isArmed: Bool { cond.lock(); defer { cond.unlock() }; return _armed }
+    public var mode: SyncMode { cond.lock(); defer { cond.unlock() }; return _mode }
     public var isRunning: Bool { state != .stopped }
 
-    /// Start syncing. Restarts if already running in the other mode.
-    public func start(armed: Bool) {
+    public func start(armed: Bool) { start(mode: armed ? .armed : .dryRun) }
+
+    /// Start syncing. Restarts if already running in another mode.
+    public func start(mode: SyncMode) {
         cond.lock()
         let running = _state != .stopped
-        let same = _armed == armed
+        let same = _mode == mode
         cond.unlock()
         if running && same { return }
         if running { stop() }
@@ -62,7 +71,8 @@ public final class SyncService {
         generation += 1
         let gen = generation
         stopRequested = false
-        _armed = armed
+        _mode = mode
+        _armed = mode == .armed
         _state = .starting
         _detail = ""
         let done = DispatchSemaphore(value: 0)
@@ -70,7 +80,7 @@ public final class SyncService {
         cond.unlock()
 
         let t = Thread { [weak self] in
-            self?.run(gen: gen, armed: armed)
+            self?.run(gen: gen, mode: mode)
             done.signal()
         }
         t.name = "pcosync-engine"
@@ -93,9 +103,9 @@ public final class SyncService {
     /// Restart in the same mode, e.g. after settings change.
     public func restartIfRunning() {
         guard isRunning else { return }
-        let armed = isArmed
+        let m = mode
         stop()
-        start(armed: armed)
+        start(mode: m)
     }
 
     /// Run an operator command (pause, resume, confirm, next-service, ...).
@@ -119,6 +129,7 @@ public final class SyncService {
         s["state"] = _state.rawValue
         s["detail"] = _detail
         s["armed"] = _armed
+        s["mode"] = _mode.rawValue
         s["running"] = _state != .stopped
         s["events"] = _events
         return s
@@ -180,7 +191,8 @@ public final class SyncService {
                                 transport: transportFactory(), sleep: pcoSleep, log: log)
         let pp = ProPresenterClient(host: cfg.propresenter.host, port: cfg.propresenter.port,
                                     timeout: cfg.propresenter.timeout, transport: transportFactory())
-        let ref = try pco.resolvePlan(cfg.pco, now: now(), windowMinutes: cfg.sync.serviceWindowMinutes)
+        let ref = try pco.resolvePlan(cfg.pco, now: now(), windowMinutes: cfg.sync.serviceWindowMinutes,
+                                      leadMinutes: cfg.sync.serviceLeadMinutes)
         if !ref.label.isEmpty { log.info("Following \(ref.label) (plan \(ref.planId))") }
         let engine = SyncEngine(pco: pco, pp: pp, serviceTypeId: ref.serviceTypeId, planId: ref.planId,
                                 settings: cfg.sync, matchSettings: cfg.match, armed: armed, clock: clock, now: now, log: log)
@@ -190,7 +202,14 @@ public final class SyncService {
 
     private static let quietActions: Set<String> = ["debounce", "unchanged", "paused"]
 
-    private func run(gen: Int, armed: Bool) {
+    private func setArmed(_ armed: Bool) {
+        cond.lock(); _armed = armed; cond.unlock()
+    }
+
+    private func run(gen: Int, mode: SyncMode) {
+        var armed = mode == .armed
+        // Kept across an auto arm/disarm swap of the same plan.
+        var carry: (planId: String, paused: Bool, serviceTime: Int?)?
         var engine: SyncEngine?
         var setupWait = 1.0
         var errorBackoff = 0.0
@@ -202,6 +221,12 @@ public final class SyncService {
                 do {
                     let e = try makeEngine(armed: armed)
                     engine = e
+                    setArmed(armed)
+                    if let c = carry, c.planId == e.planId {
+                        if c.paused { _ = e.command("pause") }
+                        if let st = c.serviceTime { e.setServiceTime(st + 1) }
+                    }
+                    carry = nil
                     setupWait = 1.0
                     nextResolve = clock() + max(store.config.sync.planRefreshSeconds, 60)
                     if armed {
@@ -215,7 +240,16 @@ public final class SyncService {
                         log.info("DRY-RUN: nothing will be written to Planning Center. Arm to move LIVE.")
                     }
                     log.info(e.status())
-                    addEvent("start", armed ? "Started ARMED on plan \(e.planId)" : "Started dry-run on plan \(e.planId)")
+                    let modeText = mode == .auto ? (armed ? "auto: ARMED" : "auto: dry-run") : (armed ? "ARMED" : "dry-run")
+                    addEvent("start", "Started \(modeText) on plan \(e.planId)")
+                    if mode == .auto && !armed {
+                        let w = e.serviceWindow()
+                        if let next = w.nextChange {
+                            log.info("Auto-arm: will arm at \(isoString(next)), \(Int(store.config.sync.serviceLeadMinutes)) min before the service")
+                        } else if e.planTimes.isEmpty {
+                            log.warning("Auto-arm: plan \(e.planId) has no service times, so it won't arm. Add service times in PCO or press Arm.")
+                        }
+                    }
                     setState(.running)
                     publish(e, nil)
                 } catch let e as NeedsSetup {
@@ -244,11 +278,31 @@ public final class SyncService {
             }
             if shouldStop(gen) { break }
 
+            // Auto mode: arm when a service time comes on, disarm after.
+            if mode == .auto {
+                let w = e.serviceWindow()
+                if w.open != e.armed {
+                    if w.open {
+                        log.warning("Auto-arm: a service time is on; ARMING plan \(e.planId)" + (w.nextChange.map { " until \(isoString($0))" } ?? ""))
+                        addEvent("arm", "Service time coming up: armed automatically")
+                    } else {
+                        log.info("Auto-arm: service times are over; disarming and giving LIVE control back")
+                        e.release()
+                        addEvent("disarm", "Service times over: back to dry-run, LIVE control released")
+                    }
+                    carry = (e.planId, e.paused, e.selectedPt)
+                    armed = w.open
+                    engine = nil
+                    continue
+                }
+            }
+
             // "auto"/"next" plan: pick up the next plan without a restart.
             let cfg = store.config
             if (cfg.pco.plan == "next" || cfg.pco.plan == "auto") && clock() >= nextResolve {
                 nextResolve = clock() + max(cfg.sync.planRefreshSeconds, 60)
-                if let ref = try? e.pco.resolvePlan(cfg.pco, now: now(), windowMinutes: cfg.sync.serviceWindowMinutes),
+                if let ref = try? e.pco.resolvePlan(cfg.pco, now: now(), windowMinutes: cfg.sync.serviceWindowMinutes,
+                                                    leadMinutes: cfg.sync.serviceLeadMinutes),
                    ref != PlanRef(serviceTypeId: e.serviceTypeId, planId: e.planId) {
                     log.info("Next plan is now \(ref.planId) (was \(e.planId)); switching")
                     e.release()
@@ -345,13 +399,23 @@ public final class SyncService {
         s["live"] = live
         s["lastDecision"] = lastDecision ?? NSNull()
         cond.lock()
+        let auto = _mode == .auto
+        cond.unlock()
+        if auto {
+            let w = e.serviceWindow()
+            s["autoArm"] = ["open": w.open, "nextChange": w.nextChange.map(isoString) ?? NSNull(),
+                            "hasServiceTimes": !e.planTimes.isEmpty] as JSONObject
+        }
+        cond.lock()
         _snapshot = s
         cond.unlock()
     }
 }
 
-func isoNow() -> String {
+func isoNow() -> String { isoString(Date()) }
+
+func isoString(_ d: Date) -> String {
     let f = ISO8601DateFormatter()
     f.formatOptions = [.withInternetDateTime]
-    return f.string(from: Date())
+    return f.string(from: d)
 }

@@ -57,10 +57,11 @@ final class ServiceAndWebTests: XCTestCase {
         return (resp.status, resp.jsonObject() ?? [:])
     }
 
-    func configure() throws {
+    func configure(plan: String? = nil) throws {
         try store.saveCredentials(Credentials(appId: FAKE_APP_ID, secret: FAKE_SECRET))
         var cfg = store.config
         cfg.pco.serviceTypeId = ST
+        if let p = plan { cfg.pco.plan = p }
         cfg.sync.debounceSeconds = 0
         cfg.propresenter.pollInterval = 0.1
         try store.save(cfg)
@@ -160,6 +161,15 @@ final class ServiceAndWebTests: XCTestCase {
         XCTAssertTrue((body["error"] as? String ?? "").contains("port"))
     }
 
+    func testStartModeFromOlderSettings() throws {
+        XCTAssertEqual(try AppConfig.decode(Data(#"{"app": {"startArmed": true}}"#.utf8)).app.launchMode, .armed)
+        XCTAssertEqual(try AppConfig.decode(Data(#"{}"#.utf8)).app.launchMode, .dryRun)
+        XCTAssertEqual(try AppConfig.decode(Data(#"{"app": {"startArmed": true, "startMode": "auto"}}"#.utf8)).app.launchMode, .auto)
+        var bad = AppConfig()
+        bad.app.startMode = "sometimes"
+        XCTAssertFalse(bad.validate().isEmpty)
+    }
+
     func testPartialConfigFillsDefaults() throws {
         let cfg = try AppConfig.decode(Data(#"{"pco": {"serviceTypeId": "42"}}"#.utf8))
         XCTAssertEqual(cfg.pco.serviceTypeId, "42")
@@ -254,4 +264,79 @@ final class ServiceAndWebTests: XCTestCase {
             XCTAssertTrue("\($0)".contains("already in use"))
         }
     }
+
+    // MARK: auto-arm
+
+    func testAutoArmsForServiceThenDisarms() throws {
+        try configure(plan: PLAN)
+        let wall = WallClock(iso("2026-10-18T12:00:00Z"))  // an hour before the 13:00 service
+        let w = world!
+        let svc = SyncService(store: store, log: log, transportFactory: { w.transport() },
+                              now: { wall.now }, pcoSleep: { _ in })
+        defer { svc.stop() }
+        let api = WebAPI(service: svc, transportFactory: { w.transport() })
+        XCTAssertEqual(api.handle(req("POST", "/api/start", ["mode": "auto"])).status, 200)
+        waitFor("running") { svc.state == .running }
+        XCTAssertFalse(svc.isArmed)
+        XCTAssertEqual(svc.mode, .auto)
+        let auto = svc.snapshot()["autoArm"] as? JSONObject
+        XCTAssertEqual(auto?["open"] as? Bool, false)
+        XCTAssertEqual(auto?["nextChange"] as? String, "2026-10-18T12:40:00Z")
+
+        world.lock.lock(); world.pp.fire("Countdown"); world.lock.unlock()
+        waitFor("dry_run decision") { (svc.snapshot()["lastDecision"] as? JSONObject)?["action"] as? String == "dry_run" }
+        world.lock.lock(); XCTAssertTrue(world.pco.writes.isEmpty); world.lock.unlock()
+
+        // Preroll for the first service: arms by itself and catches LIVE up.
+        wall.set(iso("2026-10-18T12:45:00Z"))
+        waitFor("armed") { svc.isArmed }
+        waitFor("LIVE on Countdown") {
+            world.lock.lock(); defer { world.lock.unlock() }
+            return world.pco.current()?.1?.title == "Countdown"
+        }
+        XCTAssertEqual(svc.snapshot()["armed"] as? Bool, true)
+
+        // Between services: still armed.
+        wall.set(iso("2026-10-18T14:30:00Z"))
+        Thread.sleep(forTimeInterval: 0.3)
+        XCTAssertTrue(svc.isArmed)
+
+        // After the last service's window: disarms and gives control back.
+        wall.set(iso("2026-10-18T18:05:00Z"))
+        waitFor("disarmed") { !svc.isArmed && svc.state == .running }
+        world.lock.lock(); defer { world.lock.unlock() }
+        XCTAssertNil(world.pco.controller)
+        XCTAssertEqual(svc.mode, .auto)
+    }
+
+    func testAutoArmKeepsPauseAcrossArming() throws {
+        try configure(plan: PLAN)
+        let wall = WallClock(iso("2026-10-18T12:00:00Z"))
+        let w = world!
+        let svc = SyncService(store: store, log: log, transportFactory: { w.transport() },
+                              now: { wall.now }, pcoSleep: { _ in })
+        defer { svc.stop() }
+        svc.start(mode: .auto)
+        waitFor("running") { svc.state == .running }
+        _ = svc.command("pause")
+        wall.set(iso("2026-10-18T12:45:00Z"))
+        waitFor("armed") { svc.isArmed && svc.state == .running }
+        waitFor("snapshot") { svc.snapshot()["paused"] as? Bool == true }
+        world.lock.lock(); world.pp.fire("Countdown"); world.lock.unlock()
+        Thread.sleep(forTimeInterval: 0.5)
+        world.lock.lock(); defer { world.lock.unlock() }
+        XCTAssertTrue(world.pco.writes.isEmpty)
+    }
+
+    func testStartRejectsUnknownMode() {
+        XCTAssertEqual(call(req("POST", "/api/start", ["mode": "maybe"])).0, 400)
+    }
+}
+
+final class WallClock {
+    private let lock = NSLock()
+    private var t: Date
+    init(_ t: Date) { self.t = t }
+    var now: Date { lock.lock(); defer { lock.unlock() }; return t }
+    func set(_ d: Date) { lock.lock(); t = d; lock.unlock() }
 }

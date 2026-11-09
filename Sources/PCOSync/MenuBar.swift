@@ -70,19 +70,25 @@ final class MenuBarController: NSObject, NSApplicationDelegate, NSMenuDelegate {
             || ((s["live"] as? [String: Any])?["ok"] as? Bool == false)
 
         let auto = s["mode"] as? String == "auto"
-        let symbol: String
+        let symbol: String?
         var text: String
         if !running {
-            symbol = "pause.circle"; text = ""
+            symbol = nil; text = ""
         } else if problem {
-            symbol = "exclamationmark.triangle"; text = armed ? " ARMED" : ""
+            symbol = "exclamationmark.triangle"; text = armed ? " ARM" : ""
         } else if paused {
-            symbol = "pause.circle.fill"; text = armed ? " ARMED" : " DRY"
+            symbol = "pause.circle.fill"; text = armed ? " ARM" : " DRY"
         } else {
-            symbol = armed ? "dot.radiowaves.left.and.right" : "eye"; text = armed ? " ARMED" : " DRY"
+            symbol = nil; text = armed ? " ARM" : " DRY"
         }
         if running && auto && !text.isEmpty { text = " AUTO" + text }
-        let image = NSImage(systemSymbolName: symbol, accessibilityDescription: "PCOSync")
+        // nil = the Planning Center Services glyph (every state but problem/paused).
+        let image: NSImage?
+        if let symbol {
+            image = NSImage(systemSymbolName: symbol, accessibilityDescription: "PCOSync")
+        } else {
+            image = Self.servicesGlyph
+        }
         image?.isTemplate = true
         button.image = image
         button.imagePosition = .imageLeading
@@ -92,6 +98,37 @@ final class MenuBarController: NSObject, NSApplicationDelegate, NSMenuDelegate {
         ])
         button.toolTip = "PCOSync: " + statusLine(s)
     }
+
+    /// The Planning Center Services mark (rounded tile with a bulleted list
+    /// knocked out of it) as a template image, so macOS draws it in the
+    /// menu bar's own monochrome colour in light and dark mode.
+    static let servicesGlyph: NSImage = {
+        let side: CGFloat = 16
+        let image = NSImage(size: NSSize(width: side, height: side), flipped: true) { rect in
+            guard let ctx = NSGraphicsContext.current?.cgContext else { return false }
+            let tile = rect.insetBy(dx: 0.5, dy: 0.5)
+            NSColor.black.setFill()
+            NSBezierPath(roundedRect: tile, xRadius: tile.width * 0.3, yRadius: tile.width * 0.3).fill()
+            // Punch the list out of the tile. Proportions follow the logo,
+            // nudged a little larger so it reads at menu-bar size.
+            ctx.setBlendMode(.clear)
+            let s = tile.width
+            let dotR = s * 0.075
+            let barH = s * 0.11
+            for row in [0.31, 0.5, 0.69] as [CGFloat] {
+                let cy = tile.minY + s * row
+                let cx = tile.minX + s * 0.27
+                ctx.fillEllipse(in: CGRect(x: cx - dotR, y: cy - dotR, width: dotR * 2, height: dotR * 2))
+                let bar = CGRect(x: tile.minX + s * 0.40, y: cy - barH / 2, width: s * 0.38, height: barH)
+                ctx.addPath(CGPath(roundedRect: bar, cornerWidth: barH * 0.3, cornerHeight: barH * 0.3, transform: nil))
+                ctx.fillPath()
+            }
+            return true
+        }
+        image.isTemplate = true
+        image.accessibilityDescription = "PCOSync"
+        return image
+    }()
 
     func statusLine(_ s: [String: Any]) -> String {
         let running = s["running"] as? Bool ?? false

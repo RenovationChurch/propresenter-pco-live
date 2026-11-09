@@ -28,6 +28,11 @@
 // `serviceWindowMinutes` after it starts, so rehearsals and run-throughs never
 // record times.
 //
+// End of service: once LIVE reaches the plan item named `serviceEndItem`
+// ("DISMISSAL") during a service, that service is over. Later cues go to the
+// next service once its lead time has started, and are ignored before that.
+// After the last service ends nothing moves, and auto-arm disarms.
+//
 // Max jump counts only plan items ProPresenter could have fired. Skipping
 // items with no slide in the playlist (a host prayer, a setup moment) is
 // expected and never needs confirming.
@@ -50,11 +55,15 @@ public struct SyncSettings: Codable, Equatable {
     public var onlyDuringServices = true
     /// How long after a service starts it may still be running.
     public var serviceWindowMinutes = 180.0
+    /// Auto-arm: arm this long before each service starts.
+    public var autoArmLeadMinutes = 5.0
+    /// Title of the plan item that ends a service. Empty = none.
+    public var serviceEndItem = "DISMISSAL"
 
     public init(debounceSeconds: Double = 1.0, maxJump: Int = 3, takeOver: Bool = false, resyncSeconds: Double = 0,
                 planRefreshSeconds: Double = 300, playlistNameContains: String = "", releaseOnExit: Bool = true,
                 autoServiceTime: Bool = true, serviceLeadMinutes: Double = 20, onlyDuringServices: Bool = true,
-                serviceWindowMinutes: Double = 180) {
+                serviceWindowMinutes: Double = 180, autoArmLeadMinutes: Double = 5, serviceEndItem: String = "DISMISSAL") {
         self.debounceSeconds = debounceSeconds
         self.maxJump = maxJump
         self.takeOver = takeOver
@@ -66,6 +75,8 @@ public struct SyncSettings: Codable, Equatable {
         self.serviceLeadMinutes = serviceLeadMinutes
         self.onlyDuringServices = onlyDuringServices
         self.serviceWindowMinutes = serviceWindowMinutes
+        self.autoArmLeadMinutes = autoArmLeadMinutes
+        self.serviceEndItem = serviceEndItem
     }
 }
 
@@ -171,6 +182,12 @@ public final class SyncEngine {
     public private(set) var confirmOnce = false
     public private(set) var paused = false
     public private(set) var tookControl = false
+    /// Highest service-time rank that has ended (LIVE reached the end item).
+    public internal(set) var endedRank: Int?
+    /// LIVE's slot when last read. A service only counts as ended when LIVE
+    /// is seen *arriving* at its end item, never from where it was at start
+    /// (it may still be on DISMISSAL from a rehearsal).
+    var lastSeenPos: Int??
     // Dry-run only: (real LIVE slot when simulated, simulated slot). Lets a
     // dry-run behave as if earlier moves had happened.
     var simulated: (Int, Int)?
@@ -220,6 +237,9 @@ public final class SyncEngine {
         if me == nil { me = pco.meId() }
         loadedAt = clock()
         playlistCache.removeAll()
+        if changed && !settings.serviceEndItem.isEmpty && !items.contains(where: isEndItem) {
+            log?.warning("No '\(settings.serviceEndItem)' item in plan \(plan): services end by the clock only")
+        }
         let msg = "Loaded plan \(plan): \(items.count) items (\(items.filter(\.isHeader).count) headers), \(planTimes.count) service time(s)"
         if changed { log?.info(msg) } else { log?.debug(msg) }
     }
@@ -361,6 +381,11 @@ public final class SyncEngine {
         if live.currentItemId != nil && cur == nil {
             return Decision("skip", "LIVE is on an item not in the loaded plan; try 'reload'", ppName: name, target: matched, liveItem: liveItem, liveNote: note)
         }
+        if let prev = lastSeenPos, prev != cur { noteEnded(cur) }
+        lastSeenPos = .some(cur)
+        if let over = serviceOverReason(live) {
+            return Decision("skip", over, ppName: name, target: matched, liveItem: liveItem, liveNote: note)
+        }
         var curI = cur ?? -1
         if !armed, let sim = simulated, sim.0 == curI {
             curI = sim.1
@@ -410,6 +435,7 @@ public final class SyncEngine {
 
         if !armed {
             simulated = (cur ?? -1, tgt)
+            noteEnded(tgt)
             let ctrlNote = ["none": "; would take control", "other": "; would TAKE OVER control"][ctrl] ?? ""
             let timeNote = outside ? "; armed would not move now: not near a service time" : ""
             base.action = "dry_run"
@@ -418,7 +444,13 @@ public final class SyncEngine {
         }
 
         confirmOnce = false
-        return move(live, curI, tgt, ctrl, base)
+        let d = move(live, curI, tgt, ctrl, base)
+        if let l = lastLive {
+            let p = position(l)
+            noteEnded(p)
+            lastSeenPos = .some(p)
+        }
+        return d
     }
 
     /// Which of the candidate plan items (the match, plus identical items it
@@ -431,6 +463,13 @@ public final class SyncEngine {
             return options.filter { $0.1 >= cur }.min { $0.1 < $1.1 } ?? first
         }
         let rank = effectivePt(live)
+        // The service LIVE is in has ended: this cue belongs to the next one
+        // (serviceOverReason already checked it may start).
+        if selectedPt == nil, let e = endedRank, rank <= e, let next = pick(e + 1) {
+            if lastPtRank != e + 1 { log?.info("Service time \(e + 2) of \(planTimes.count)\(ptLabel(e + 1)) has started") }
+            lastPtRank = e + 1
+            return next
+        }
         guard let choice = pick(rank) else { return nil }
         // ProPresenter went back to the start while the next service is about
         // to begin: that's the next service starting, not a rewind.
@@ -468,12 +507,13 @@ public final class SyncEngine {
     }
 
     /// For auto-arm: whether a service time is on now (from
-    /// `serviceLeadMinutes` before it starts until `serviceWindowMinutes`
+    /// `autoArmLeadMinutes` before it starts until `serviceWindowMinutes`
     /// after), and when that next changes. Overlapping windows (9:00 and
     /// 10:50) count as one, so it stays armed between them. Plans without
     /// service times are never "on". Ignores `onlyDuringServices`.
     public func serviceWindow() -> (open: Bool, nextChange: Date?) {
-        let lead = settings.serviceLeadMinutes * 60, len = settings.serviceWindowMinutes * 60
+        if allServicesEnded { return (false, nil) }
+        let lead = settings.autoArmLeadMinutes * 60, len = settings.serviceWindowMinutes * 60
         let windows = planTimes.compactMap(\.start).sorted().map { ($0.addingTimeInterval(-lead), $0.addingTimeInterval(len)) }
         // Merge overlapping windows.
         var merged: [(Date, Date)] = []
@@ -487,6 +527,51 @@ public final class SyncEngine {
         let t = now()
         if let on = merged.first(where: { $0.0 <= t && t <= $0.1 }) { return (true, on.1) }
         return (false, merged.first(where: { $0.0 > t })?.0)
+    }
+
+    // MARK: end of service
+
+    func isEndItem(_ item: PlanItem) -> Bool {
+        let want = normalize(settings.serviceEndItem)
+        return !want.isEmpty && !item.isHeader && (normalize(item.title) == want || normalize(titleBase(item.title)) == want)
+    }
+
+    /// The last service time has ended.
+    public var allServicesEnded: Bool {
+        guard let e = endedRank else { return false }
+        return e >= max(planTimes.count, 1) - 1
+    }
+
+    /// Record that a service ended if LIVE is on (or past) its end item, and
+    /// that service is on by the clock (so a rehearsal never counts).
+    func noteEnded(_ pos: Int?) {
+        guard let p = pos, p >= 0, p < slots.count, !settings.serviceEndItem.isEmpty else { return }
+        let rank = ptRank[slots[p].planTimeId] ?? 0
+        guard let endSlot = slots.firstIndex(where: { (ptRank[$0.planTimeId] ?? 0) == rank && $0.item.map(isEndItem) == true }),
+              p >= endSlot else { return }
+        if rank < planTimes.count, let start = planTimes[rank].start,
+           now() < start.addingTimeInterval(-settings.serviceLeadMinutes * 60) { return }
+        if (endedRank ?? -1) < rank {
+            endedRank = rank
+            log?.info("Service time \(rank + 1) of \(max(planTimes.count, 1))\(ptLabel(rank)) is over (LIVE reached '\(slots[endSlot].item!.title)')")
+        }
+    }
+
+    /// Why nothing should move because the service LIVE is in has ended, or
+    /// nil if the cue may go ahead (possibly into the next service).
+    func serviceOverReason(_ live: LiveState) -> String? {
+        guard selectedPt == nil, let e = endedRank, effectivePt(live) <= e else { return nil }
+        let next = e + 1
+        if next >= max(planTimes.count, 1) {
+            return "the last service is over ('\(settings.serviceEndItem)' reached); LIVE not moved"
+        }
+        if !settings.autoServiceTime {
+            return "service \(e + 1) is over; press Next ▶ under Service time to start service \(next + 1)"
+        }
+        if (clockRank() ?? -1) < next {
+            return "service \(e + 1) is over; service \(next + 1)\(ptLabel(next)) hasn't started yet"
+        }
+        return nil
     }
 
     /// How big a move is, counting only plan items ProPresenter could fire:

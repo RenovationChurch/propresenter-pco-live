@@ -94,6 +94,7 @@ public struct AppConfig: Codable, Equatable {
         if pco.plan.trimmingCharacters(in: .whitespaces).isEmpty { errs.append("plan must be 'auto', 'next' or a plan ID") }
         if let m = app.startMode, SyncMode(rawValue: m) == nil { errs.append("start mode must be dry, armed or auto") }
         if sync.serviceLeadMinutes < 0 { errs.append("service lead time can't be negative") }
+        if sync.autoArmLeadMinutes < 0 { errs.append("auto-arm lead time can't be negative") }
         if sync.serviceWindowMinutes < 30 { errs.append("service length must be at least 30 minutes") }
         for p in match.ignore where p.hasPrefix(regexPrefix) {
             if (try? NSRegularExpression(pattern: String(p.dropFirst(regexPrefix.count)))) == nil {

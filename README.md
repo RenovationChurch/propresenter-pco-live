@@ -88,13 +88,23 @@ The menu-bar icon shows the state at a glance. **ARMED** in red means it's movin
 
 **Start syncing when the app launches** (on by default) starts it at login. **…starting in** picks how: **Dry-run** (the default), **Auto-arm** (recommended once you've tested it), or **Armed**.
 
+### End of service
+
+Settings › Service times › **A service ends at this PCO item** (default `DISMISSAL`) names the plan item that ends a service. Case and punctuation are ignored, and "DISMISSAL - Jon" counts too. Once LIVE reaches it during a service:
+
+- That service is over. Cues after it don't move LIVE until the next service's lead time ("A service starts this many minutes early", 20 min by default). Then the next cue starts the next service.
+- After the **last** service, nothing moves LIVE, and Auto-arm disarms right away.
+- A DISMISSAL left over in LIVE from a rehearsal doesn't count: LIVE has to arrive there during the service.
+
+If the plan has no item by that name, the log says so and services end by the clock. Leave the setting empty to always end by the clock.
+
 ### Auto-arm
 
 With **Auto-arm**, nobody has to press Arm on Sunday:
 
-- It runs in dry-run until **20 minutes before** the first service time (Settings › Service times › "A service starts this many minutes early"). Then it arms, takes LIVE control and catches LIVE up to ProPresenter.
+- It runs in dry-run until **5 minutes before** the first service time (Settings › Service times › "Auto-arm this many minutes before a service"). Then it arms, takes LIVE control and catches LIVE up to ProPresenter.
 - It stays armed between services, as long as the next one starts within **3 hours** of the last ("A service can run this many minutes"). 9:00 and 10:50 count as one stretch.
-- 3 hours after the **last** service time starts, it gives LIVE control back and goes back to dry-run. The dashboard says when it will next arm or disarm. **AUTO · ARMED** / **AUTO · DRY-RUN** shows in the header and the menu bar.
+- When LIVE reaches the **end-of-service item** in the last service (see below), it gives LIVE control back and goes back to dry-run. If that item never comes up, it does this 3 hours after the last service time starts. The dashboard says when it will next arm or disarm. **AUTO · ARMED** / **AUTO · DRY-RUN** shows in the header and the menu bar.
 - Services on different days (Saturday night and Sunday morning, Christmas Eve) arm and disarm separately.
 - A plan with no service times in PCO never auto-arms. The dashboard says so; press **Arm** if you need it.
 - If you **Pause** before it arms, it stays paused after arming.

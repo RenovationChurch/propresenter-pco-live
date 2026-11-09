@@ -333,15 +333,15 @@ final class EngineTests: XCTestCase {
         XCTAssertEqual(h.liveTitle, "Benediction")
     }
 
-    // MARK: auto-arm window (fake services 13:00Z and 15:00Z, 20 min lead, 180 min long)
+    // MARK: auto-arm window (fake services 13:00Z and 15:00Z, arms 5 min before, 180 min long)
 
     func testServiceWindowOpensAtLeadTime() {
         let h = Harness()
-        h.clock.wall = iso("2026-10-18T12:39:00Z")
+        h.clock.wall = iso("2026-10-18T12:54:00Z")
         var w = h.engine.serviceWindow()
         XCTAssertFalse(w.open)
-        XCTAssertEqual(w.nextChange, iso("2026-10-18T12:40:00Z"))
-        h.clock.wall = iso("2026-10-18T12:40:00Z")
+        XCTAssertEqual(w.nextChange, iso("2026-10-18T12:55:00Z"))
+        h.clock.wall = iso("2026-10-18T12:55:00Z")
         w = h.engine.serviceWindow()
         XCTAssertTrue(w.open)
     }
@@ -369,7 +369,7 @@ final class EngineTests: XCTestCase {
         h.clock.wall = iso("2026-10-18T06:00:00Z")  // overnight
         let w = h.engine.serviceWindow()
         XCTAssertFalse(w.open)
-        XCTAssertEqual(w.nextChange, iso("2026-10-18T13:40:00Z"))
+        XCTAssertEqual(w.nextChange, iso("2026-10-18T13:55:00Z"))
     }
 
     func testServiceWindowNeverOpensWithoutServiceTimes() {

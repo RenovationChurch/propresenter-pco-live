@@ -195,6 +195,8 @@ textarea { min-height: 90px; font-family: ui-monospace, SFMono-Regular, Menlo, m
       <div class="two">
         <label>A service starts this many minutes early<input type="number" id="f-lead" min="0"><span class="hint">Covers preroll and countdown.</span></label>
         <label>A service can run this many minutes<input type="number" id="f-window" min="30"><span class="hint">Counted from its start time.</span></label>
+        <label>Auto-arm this many minutes before a service<input type="number" id="f-armlead" min="0"><span class="hint">Only used in Auto-arm mode.</span></label>
+        <label>A service ends at this PCO item<input type="text" id="f-enditem" spellcheck="false" placeholder="DISMISSAL"><span class="hint">When LIVE reaches it, that service is over: the next cue goes to the next service, and after the last one Auto-arm disarms. Case and punctuation ignored. Leave empty to end by the clock only.</span></label>
       </div>
     </fieldset>
     <fieldset><legend>Matching</legend>
@@ -317,7 +319,8 @@ function render(s) {
   const nT = Math.max(times.length, 1);
   const eff = (st.effective ?? 0);
   const lbl = (r) => times[r] && times[r].startsAt ? new Date(times[r].startsAt).toLocaleTimeString([], { hour: "numeric", minute: "2-digit" }) : String(r + 1);
-  $("svc").textContent = s.running ? ((st.selected === null || st.selected === undefined) ? "Automatic (" + lbl(eff) + ")" : lbl(st.selected) + " (" + (st.selected + 1) + " of " + nT + ")") : "";
+  const over = st.ended !== null && st.ended !== undefined ? " · service " + (st.ended + 1) + " over" : "";
+  $("svc").textContent = (s.running ? ((st.selected === null || st.selected === undefined) ? "Automatic (" + lbl(eff) + ")" : lbl(st.selected) + " (" + (st.selected + 1) + " of " + nT + ")") : "") + (s.running ? over : "");
 
   $("plan-id").textContent = s.planId ? "#" + s.planId : "";
   const planEl = $("plan");
@@ -397,6 +400,7 @@ async function loadConfig() {
     $("f-takeover").checked = c.sync.takeOver; $("f-release").checked = c.sync.releaseOnExit;
     $("f-autosvc").checked = c.sync.autoServiceTime; $("f-onlysvc").checked = c.sync.onlyDuringServices;
     $("f-lead").value = c.sync.serviceLeadMinutes; $("f-window").value = c.sync.serviceWindowMinutes;
+    $("f-armlead").value = c.sync.autoArmLeadMinutes; $("f-enditem").value = c.sync.serviceEndItem;
     $("f-ignore").value = c.match.ignore.join("\n");
     $("f-aliases").value = Object.entries(c.match.aliases).map(([k, v]) => k + " = " + v).join("\n");
     $("f-positional").checked = c.match.positionalFallback;
@@ -454,7 +458,8 @@ $("cfg-form").onsubmit = async (e) => {
     propresenter: { host: $("f-host").value.trim(), port: num("f-port"), timeout: num("f-timeout"), pollInterval: num("f-poll") },
     sync: { debounceSeconds: num("f-debounce"), maxJump: num("f-maxjump"), takeOver: $("f-takeover").checked, resyncSeconds: num("f-resync"),
             planRefreshSeconds: num("f-refresh"), playlistNameContains: $("f-plfilter").value.trim(), releaseOnExit: $("f-release").checked,
-            autoServiceTime: $("f-autosvc").checked, onlyDuringServices: $("f-onlysvc").checked, serviceLeadMinutes: num("f-lead"), serviceWindowMinutes: num("f-window") },
+            autoServiceTime: $("f-autosvc").checked, onlyDuringServices: $("f-onlysvc").checked, serviceLeadMinutes: num("f-lead"), serviceWindowMinutes: num("f-window"),
+            autoArmLeadMinutes: num("f-armlead"), serviceEndItem: $("f-enditem").value.trim() },
     match: { ignore: $("f-ignore").value.split("\n").map((s) => s.trim()).filter(Boolean), aliases, positionalFallback: $("f-positional").checked },
     app: { autoStart: $("f-autostart").checked, startMode: $("f-startmode").value, startArmed: $("f-startmode").value === "armed", logLevel: $("f-loglevel").value },
     web: { port: num("f-webport"), allowRemote: $("f-remote").checked, password: $("f-webpw").value },

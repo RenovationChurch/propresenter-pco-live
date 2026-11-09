@@ -176,6 +176,8 @@ final class ServiceAndWebTests: XCTestCase {
         XCTAssertEqual(cfg.pco.plan, "auto")
         XCTAssertEqual(cfg.sync.maxJump, 3)
         XCTAssertEqual(cfg.sync.serviceLeadMinutes, 20)
+        XCTAssertEqual(cfg.sync.autoArmLeadMinutes, 5)
+        XCTAssertEqual(cfg.sync.serviceEndItem, "DISMISSAL")
         XCTAssertTrue(cfg.sync.onlyDuringServices)
         XCTAssertEqual(cfg.match.ignore.count, 3)
     }
@@ -281,14 +283,14 @@ final class ServiceAndWebTests: XCTestCase {
         XCTAssertEqual(svc.mode, .auto)
         let auto = svc.snapshot()["autoArm"] as? JSONObject
         XCTAssertEqual(auto?["open"] as? Bool, false)
-        XCTAssertEqual(auto?["nextChange"] as? String, "2026-10-18T12:40:00Z")
+        XCTAssertEqual(auto?["nextChange"] as? String, "2026-10-18T12:55:00Z")
 
         world.lock.lock(); world.pp.fire("Countdown"); world.lock.unlock()
         waitFor("dry_run decision") { (svc.snapshot()["lastDecision"] as? JSONObject)?["action"] as? String == "dry_run" }
         world.lock.lock(); XCTAssertTrue(world.pco.writes.isEmpty); world.lock.unlock()
 
         // Preroll for the first service: arms by itself and catches LIVE up.
-        wall.set(iso("2026-10-18T12:45:00Z"))
+        wall.set(iso("2026-10-18T12:56:00Z"))
         waitFor("armed") { svc.isArmed }
         waitFor("LIVE on Countdown") {
             world.lock.lock(); defer { world.lock.unlock() }
@@ -319,7 +321,7 @@ final class ServiceAndWebTests: XCTestCase {
         svc.start(mode: .auto)
         waitFor("running") { svc.state == .running }
         _ = svc.command("pause")
-        wall.set(iso("2026-10-18T12:45:00Z"))
+        wall.set(iso("2026-10-18T12:56:00Z"))
         waitFor("armed") { svc.isArmed && svc.state == .running }
         waitFor("snapshot") { svc.snapshot()["paused"] as? Bool == true }
         world.lock.lock(); world.pp.fire("Countdown"); world.lock.unlock()

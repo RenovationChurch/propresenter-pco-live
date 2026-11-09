@@ -336,3 +336,89 @@ final class AutoPlanTests: XCTestCase {
         XCTAssertEqual(try pco.resolvePlan(PCOSettings(), now: iso("2026-12-27T19:00:00Z")).planId, "evening")
     }
 }
+
+/// The Oct 25 plan with a DISMISSAL item at the end of each service.
+func dismissalHarness(armed: Bool = true, wall: String, endItem: String = "DISMISSAL") -> Harness {
+    let pco = FakePCO(items: OCT25 + [FakeItem("dismiss", "DISMISSAL", "item")])
+    pco.planTimes = [("pt9", "service", "2026-10-25T13:00:00Z"), ("pt1050", "service", "2026-10-25T14:50:00Z")]
+    let pp = FakeProPresenter(playlist: (OCT25_PLAYLIST + ["Dismissal"]).map { FakePPEntry($0, isPCO: false) })
+    let h = Harness(armed: armed, settings: SyncSettings(debounceSeconds: 1.0, maxJump: 3, planRefreshSeconds: 0, serviceEndItem: endItem),
+                    pco: pco, pp: pp)
+    h.clock.wall = iso(wall)
+    return h
+}
+
+final class ServiceEndTests: XCTestCase {
+    let dismissal = 12  // playlist index
+
+    func testDismissalEndsServiceUntilTheNextOneStarts() {
+        let h = dismissalHarness(wall: "2026-10-25T14:15:00Z")  // 10:15, 9:00 wrapping up
+        h.pcoFake.place("jtg2", "pt9")
+        h.pcoFake.controller = ME
+        XCTAssertEqual(h.fireAt(dismissal).action, "moved")
+        XCTAssertEqual(h.liveId, "dismiss")
+        XCTAssertEqual(h.engine.endedRank, 0)
+        XCTAssertFalse(h.engine.allServicesEnded)
+
+        // Run-through before the 10:50 preroll: LIVE stays on the 9:00 DISMISSAL.
+        let writes = h.pcoFake.writes.count
+        let d = h.fireAt(2)  // Just That Good
+        XCTAssertEqual(d.action, "skip", d.describe())
+        XCTAssertTrue(d.reason.contains("service 1 is over"), d.reason)
+        XCTAssertEqual(h.pcoFake.writes.count, writes)
+
+        // 10:50 preroll: the next cue starts service 2.
+        h.clock.wall = iso("2026-10-25T14:32:00Z")
+        let c = h.fireAt(0)
+        XCTAssertEqual(c.action, "moved", c.describe())
+        XCTAssertEqual(h.livePt, "pt1050")
+        XCTAssertEqual(h.liveId, "preroll")
+    }
+
+    func testLastDismissalEndsEverything() {
+        let h = dismissalHarness(wall: "2026-10-25T16:05:00Z")
+        h.pcoFake.place("jtg2", "pt1050")
+        h.pcoFake.controller = ME
+        XCTAssertTrue(h.engine.serviceWindow().open)
+        XCTAssertEqual(h.fireAt(dismissal).action, "moved")
+        XCTAssertTrue(h.engine.allServicesEnded)
+        let w = h.engine.serviceWindow()
+        XCTAssertFalse(w.open)  // auto-arm disarms now, not 3 hours after 10:50
+        XCTAssertNil(w.nextChange)
+        let writes = h.pcoFake.writes.count
+        let d = h.fireAt(2)
+        XCTAssertEqual(d.action, "skip")
+        XCTAssertTrue(d.reason.contains("last service is over"), d.reason)
+        XCTAssertEqual(h.pcoFake.writes.count, writes)
+    }
+
+    func testLeftoverRehearsalDismissalDoesNotEndTheService() {
+        let h = dismissalHarness(wall: "2026-10-25T12:56:00Z")
+        h.pcoFake.place("dismiss", "pt9")  // LIVE never reset after the run-through
+        h.pcoFake.controller = ME
+        _ = h.fireAt(1)
+        XCTAssertNil(h.engine.endedRank)
+    }
+
+    func testDismissalDuringRunThroughDoesNotCount() {
+        let h = dismissalHarness(armed: false, wall: "2026-10-25T11:50:00Z")  // 7:50 run-through
+        h.pcoFake.place("jtg2", "pt9")
+        _ = h.fireAt(11)
+        XCTAssertEqual(h.fireAt(dismissal).action, "dry_run")
+        XCTAssertNil(h.engine.endedRank)
+    }
+
+    func testEndItemNameIsASetting() {
+        let off = dismissalHarness(wall: "2026-10-25T14:15:00Z", endItem: "")
+        off.pcoFake.place("jtg2", "pt9")
+        off.pcoFake.controller = ME
+        XCTAssertEqual(off.fireAt(dismissal).action, "moved")
+        XCTAssertNil(off.engine.endedRank)
+
+        let renamed = dismissalHarness(wall: "2026-10-25T14:15:00Z", endItem: "dismissal!")
+        renamed.pcoFake.place("jtg2", "pt9")
+        renamed.pcoFake.controller = ME
+        XCTAssertEqual(renamed.fireAt(dismissal).action, "moved")
+        XCTAssertEqual(renamed.engine.endedRank, 0)
+    }
+}

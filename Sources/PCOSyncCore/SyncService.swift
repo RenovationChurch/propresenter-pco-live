@@ -209,7 +209,7 @@ public final class SyncService {
     private func run(gen: Int, mode: SyncMode) {
         var armed = mode == .armed
         // Kept across an auto arm/disarm swap of the same plan.
-        var carry: (planId: String, paused: Bool, serviceTime: Int?)?
+        var carry: (planId: String, paused: Bool, serviceTime: Int?, ended: Int?)?
         var engine: SyncEngine?
         var setupWait = 1.0
         var errorBackoff = 0.0
@@ -225,6 +225,7 @@ public final class SyncService {
                     if let c = carry, c.planId == e.planId {
                         if c.paused { _ = e.command("pause") }
                         if let st = c.serviceTime { e.setServiceTime(st + 1) }
+                        e.endedRank = c.ended
                     }
                     carry = nil
                     setupWait = 1.0
@@ -245,7 +246,7 @@ public final class SyncService {
                     if mode == .auto && !armed {
                         let w = e.serviceWindow()
                         if let next = w.nextChange {
-                            log.info("Auto-arm: will arm at \(isoString(next)), \(Int(store.config.sync.serviceLeadMinutes)) min before the service")
+                            log.info("Auto-arm: will arm at \(isoString(next)), \(Int(store.config.sync.autoArmLeadMinutes)) min before the service")
                         } else if e.planTimes.isEmpty {
                             log.warning("Auto-arm: plan \(e.planId) has no service times, so it won't arm. Add service times in PCO or press Arm.")
                         }
@@ -286,11 +287,12 @@ public final class SyncService {
                         log.warning("Auto-arm: a service time is on; ARMING plan \(e.planId)" + (w.nextChange.map { " until \(isoString($0))" } ?? ""))
                         addEvent("arm", "Service time coming up: armed automatically")
                     } else {
-                        log.info("Auto-arm: service times are over; disarming and giving LIVE control back")
+                        log.info(e.allServicesEnded ? "Auto-arm: the last service is over; disarming and giving LIVE control back"
+                                                    : "Auto-arm: service times are over; disarming and giving LIVE control back")
                         e.release()
                         addEvent("disarm", "Service times over: back to dry-run, LIVE control released")
                     }
-                    carry = (e.planId, e.paused, e.selectedPt)
+                    carry = (e.planId, e.paused, e.selectedPt, e.endedRank)
                     armed = w.open
                     engine = nil
                     continue
@@ -380,7 +382,8 @@ public final class SyncService {
         s["status"] = e.status()
         s["items"] = e.items.map { ["id": $0.id, "title": $0.title, "type": $0.itemType, "sequence": $0.sequence] as JSONObject }
         s["planTimes"] = e.planTimes.map { ["id": $0.id, "startsAt": $0.startsAt ?? "", "name": $0.name ?? ""] as JSONObject }
-        s["serviceTime"] = ["selected": e.selectedPt.map { $0 as Any } ?? NSNull(), "effective": e.effectiveServiceTime] as JSONObject
+        s["serviceTime"] = ["selected": e.selectedPt.map { $0 as Any } ?? NSNull(), "effective": e.effectiveServiceTime,
+                            "ended": e.endedRank.map { $0 as Any } ?? NSNull()] as JSONObject
         var pp: JSONObject = ["ok": ppError == nil, "error": ppError ?? ""]
         if let a = e.lastActive {
             pp["playlist"] = a.playlist?.name ?? ""

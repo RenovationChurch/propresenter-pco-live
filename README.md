@@ -84,7 +84,7 @@ The dashboard shows what ProPresenter is on, where LIVE is, who controls LIVE, t
 | **Service time: Previous / Next / Automatic** | Override the service time (e.g. 10:50 after 9:00). Rarely needed: **Automatic** (the default) follows LIVE and starts the next service on its own. |
 | **Reload plan** | Re-fetch the plan after editing it in PCO. It also refreshes every 5 minutes on its own. |
 
-The menu-bar icon shows the state at a glance. **ARMED** in red means it's moving LIVE, **DRY** means dry-run, and a warning triangle means it can't reach ProPresenter or Planning Center. The same controls are in its menu.
+The menu-bar icon shows the state at a glance. **ARMED** in red means it's moving LIVE, **DRY** next to the Planning Center Services mark means dry-run, and a warning triangle means it can't reach ProPresenter or Planning Center. The same controls are in its menu.
 
 **Start syncing when the app launches** (on by default) starts it at login. **…starting in** picks how: **Dry-run** (the default), **Auto-arm** (recommended once you've tested it), or **Armed**.
 

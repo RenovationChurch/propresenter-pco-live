@@ -18,6 +18,7 @@ rm -rf "$APP"
 mkdir -p "$APP/Contents/MacOS" "$APP/Contents/Resources"
 cp "$BIN" "$APP/Contents/MacOS/PCOSync"
 cp macos/Info.plist "$APP/Contents/Info.plist"
+cp macos/AppIcon.icns "$APP/Contents/Resources/AppIcon.icns"
 
 # Ad-hoc signature: enough for a locally built app to run and to register
 # as a login item. Not notarized, so it's for this Mac (or ones you copy it to).

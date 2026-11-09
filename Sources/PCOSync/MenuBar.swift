@@ -73,16 +73,16 @@ final class MenuBarController: NSObject, NSApplicationDelegate, NSMenuDelegate {
         let symbol: String?
         var text: String
         if !running {
-            symbol = "pause.circle"; text = ""
+            symbol = nil; text = ""
         } else if problem {
-            symbol = "exclamationmark.triangle"; text = armed ? " ARMED" : ""
+            symbol = "exclamationmark.triangle"; text = armed ? " ARM" : ""
         } else if paused {
-            symbol = "pause.circle.fill"; text = armed ? " ARMED" : " DRY"
+            symbol = "pause.circle.fill"; text = armed ? " ARM" : " DRY"
         } else {
-            symbol = armed ? "dot.radiowaves.left.and.right" : nil; text = armed ? " ARMED" : " DRY"
+            symbol = nil; text = armed ? " ARM" : " DRY"
         }
         if running && auto && !text.isEmpty { text = " AUTO" + text }
-        // nil = the Planning Center Services glyph (idle / dry-run).
+        // nil = the Planning Center Services glyph (every state but problem/paused).
         let image: NSImage?
         if let symbol {
             image = NSImage(systemSymbolName: symbol, accessibilityDescription: "PCOSync")
